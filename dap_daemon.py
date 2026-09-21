@@ -10,6 +10,7 @@ import subprocess
 import threading
 import queue
 import wave
+import signal
 import contextlib
 import pygame
 from PIL import Image, ImageDraw, ImageFont
@@ -271,7 +272,6 @@ def get_bt_devices():
     return devs
 
 def connect_bt_device(mac):
-    """Bluetooth機器のペアリング、信頼設定、接続を別スレッドで一括実行する"""
     def _do_pair_and_connect():
         try:
             commands = [
@@ -287,6 +287,38 @@ def connect_bt_device(mac):
         except Exception:
             pass
     threading.Thread(target=_do_pair_and_connect, daemon=True).start()
+
+# --- 電子ペーパー終了／画面クリア処理 ---
+def clean_shutdown_display(message="Power Off..."):
+    """画面にメッセージを表示して全画面リフレッシュ後、スリープに入れて完全停止する"""
+    try:
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
+    
+    try:
+        epd.init()
+        img = Image.new('1', (epd.height, epd.width), 255)
+        draw = ImageDraw.Draw(img)
+        
+        # 画面中央にメッセージを描画
+        w, h = epd.height, epd.width
+        draw.rectangle([0, 0, w, h], fill=255)
+        draw.text((20, (h // 2) - 10), message, font=font_title, fill=0)
+        
+        epd.display(epd.getbuffer(img))
+        time.sleep(1.0)
+        epd.Clear()
+        epd.sleep()
+    except Exception:
+        pass
+
+def handle_signal(sig, frame):
+    clean_shutdown_display("Shutting down...")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGINT, handle_signal)
 
 # --- 7. マルチスレッド用描画キュー＆ワーカー ---
 display_queue = queue.Queue()
@@ -310,7 +342,6 @@ def display_worker():
                 m_items = list(menu_items)
                 sel_alb = selected_album
                 playing = is_playing
-                cur_vol = volume
                 
                 pos_ms = pygame.mixer.music.get_pos() if playing else track_paused_time
                 current_sec = max(0, pos_ms // 1000) if pos_ms >= 0 else 0
@@ -331,14 +362,8 @@ def display_worker():
 
             if scr == "PLAY":
                 state_str = "> PLAY" if playing else "|| PAUSE"
-                vol_str = f"VOL: {int(round(cur_vol * 100))}%"
                 
-                # ヘッダー
                 draw.text((8, 2), state_str, font=font_main, fill=0)
-                
-                vol_w = font_main.getlength(vol_str) if hasattr(font_main, 'getlength') else len(vol_str) * 8
-                draw.text((242 - vol_w, 2), vol_str, font=font_main, fill=0)
-
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
@@ -355,12 +380,10 @@ def display_worker():
                 draw.text((8, 23), disp_title, font=font_title, fill=0)
                 draw.text((8, 48), disp_artist, font=font_small, fill=0)
 
-                # プログレスバー外枠
                 bar_x1, bar_y1 = 8, 70
                 bar_x2, bar_y2 = 240, 82
                 draw.rectangle([bar_x1, bar_y1, bar_x2, bar_y2], outline=0, fill=255, width=1)
 
-                # 1/8ステップ・連続バー描画
                 if tot_sec > 0:
                     progress_ratio = min(1.0, current_sec / float(tot_sec))
                     segment = int(progress_ratio * 8)
@@ -375,7 +398,6 @@ def display_worker():
                             fill=0
                         )
 
-                # 時間表示
                 time_str = f"Time: {format_time_str(tot_sec)}"
                 draw.text((8, 87), time_str, font=font_main, fill=0)
 
@@ -555,8 +577,10 @@ def on_btn_menu_or_select():
                         update_menu_items()
                         request_display_update(is_full_refresh=False)
                     elif selected == "再起動":
+                        clean_shutdown_display("Rebooting...")
                         os.system("sudo reboot")
                     elif selected == "シャットダウン":
+                        clean_shutdown_display("Power Off...")
                         os.system("sudo shutdown -h now")
 
 def on_btn_play_or_back():
@@ -618,18 +642,9 @@ def on_btn_prev():
     with state_lock:
         reset_inactivity_timer()
         if playlist:
-            pos_ms = pygame.mixer.music.get_pos()
-            current_sec = max(0, pos_ms // 1000) if pos_ms >= 0 else 0
-            
-            # 再生中で3秒以上進んでいる場合は頭出し
-            if is_playing and current_sec >= 3:
-                play_current_track()
-                request_display_update(is_full_refresh=False)
-            else:
-                # 3秒未満または停止中の場合は前の曲へ
-                current_track_idx = (current_track_idx - 1) % len(playlist)
-                play_current_track()
-                request_display_update(is_full_refresh=True)
+            current_track_idx = (current_track_idx - 1) % len(playlist)
+            play_current_track()
+            request_display_update(is_full_refresh=True)
 
 def on_btn_next():
     if not debounce(): return
@@ -683,4 +698,4 @@ try:
                     request_display_update(is_full_refresh=True)
 
 except KeyboardInterrupt:
-    epd.sleep()
+    clean_shutdown_display("Power Off...")
