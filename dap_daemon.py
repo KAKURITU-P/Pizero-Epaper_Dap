@@ -124,7 +124,6 @@ DEBOUNCE_TIME = 0.2
 state_lock = threading.Lock()
 
 def truncate_by_width(text, font, max_px):
-    """フォントの描画ピクセル幅に基づいて、枠に収まらない場合は末尾を … にする"""
     def get_text_width(t):
         if hasattr(font, 'getlength'):
             return font.getlength(t)
@@ -167,7 +166,6 @@ def get_ip_address():
 
 # --- 5.1 Wi-Fi / Bluetooth rfkill 制御関数 ---
 def get_rfkill_status():
-    """Wi-Fi と Bluetooth の有効/無効(True/False)を取得"""
     wifi_enabled = True
     bt_enabled = True
     try:
@@ -190,7 +188,6 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-Fi または BT の ON/OFF を切り替え"""
     wifi_on, bt_on = get_rfkill_status()
     target = "wlan" if dev_type == "wifi" else "bluetooth"
     currently_on = wifi_on if dev_type == "wifi" else bt_on
@@ -226,7 +223,6 @@ def get_track_duration_sec(filepath):
     return 0
 
 def get_track_artist_info(filepath):
-    """メタデータから作者情報（アーティスト名）を取得。無ければフォルダ名を返す"""
     if not filepath or not os.path.exists(filepath):
         return "不明なアーティスト"
 
@@ -290,7 +286,6 @@ def connect_bt_device(mac):
 
 # --- 電子ペーパー終了／画面クリア処理 ---
 def clean_shutdown_display(message="Power Off..."):
-    """画面にメッセージを表示して全画面リフレッシュ後、スリープに入れて完全停止する"""
     try:
         pygame.mixer.music.stop()
     except Exception:
@@ -301,7 +296,6 @@ def clean_shutdown_display(message="Power Off..."):
         img = Image.new('1', (epd.height, epd.width), 255)
         draw = ImageDraw.Draw(img)
         
-        # 画面中央にメッセージを描画
         w, h = epd.height, epd.width
         draw.rectangle([0, 0, w, h], fill=255)
         draw.text((20, (h // 2) - 10), message, font=font_title, fill=0)
@@ -342,6 +336,7 @@ def display_worker():
                 m_items = list(menu_items)
                 sel_alb = selected_album
                 playing = is_playing
+                cur_vol = volume
                 
                 pos_ms = pygame.mixer.music.get_pos() if playing else track_paused_time
                 current_sec = max(0, pos_ms // 1000) if pos_ms >= 0 else 0
@@ -362,8 +357,10 @@ def display_worker():
 
             if scr == "PLAY":
                 state_str = "> PLAY" if playing else "|| PAUSE"
+                vol_str = f"VOL: {int(cur_vol * 100)}%"
                 
                 draw.text((8, 2), state_str, font=font_main, fill=0)
+                draw.text((170, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
