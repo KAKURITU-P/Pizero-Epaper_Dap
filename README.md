@@ -119,5 +119,4 @@ sudo systemctl start dap.service
 ## ライセンス
 
 本プロジェクトのソースコードは [MIT License](https://www.google.com/search?q=LICENSE&utm_source=gemini) のもとで公開されています。
-EOF
-cd ~/dap && git add README.md && git commit -m "Update README.md" && git push
+
