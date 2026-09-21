@@ -639,8 +639,13 @@ def on_btn_prev():
     with state_lock:
         reset_inactivity_timer()
         if playlist:
-            current_track_idx = (current_track_idx - 1) % len(playlist)
-            play_current_track()
+            pos_ms = pygame.mixer.music.get_pos()
+            # 3秒以上再生されている場合は曲頭に戻す、3秒未満なら前の曲へ移動
+            if is_playing and pos_ms > 3000:
+                play_current_track()
+            else:
+                current_track_idx = (current_track_idx - 1) % len(playlist)
+                play_current_track()
             request_display_update(is_full_refresh=True)
 
 def on_btn_next():
