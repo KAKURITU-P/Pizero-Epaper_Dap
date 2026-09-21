@@ -124,12 +124,4 @@ cd ~/dap && git add README.md && git commit -m "Update README.md" && git push
 
 ```
 
-**正しく実行されたかの確認方法:**  
-実行後に `Username for '[https://github.com](https://github.com)':` または `[main xxxxxxx] Update README.md` というログが表示されれば成功です。
 
-<Elicitations message="次に何か設定や調整を行いますか？">
-  <Elicitation label="GitHub ページを確認" query="GitHubのリポジトリページでREADMEが正しく表示されているか確認したいです"/>
-  <Elicitation label="自動起動(systemd)の設定" query="dap.service を作成してラズパイ起動時に自動でDAPを起動する手順を教えてください"/>
-</Elicitations>
-
-```
