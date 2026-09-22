@@ -74,6 +74,7 @@ playlist_original = []
 playlist = []
 albums_dict = {}
 selected_album = None
+current_track_idx = 0
 
 def reload_music_library():
     global playlist_original, playlist, albums_dict, current_track_idx
@@ -97,7 +98,6 @@ def reload_music_library():
 
 reload_music_library()
 
-current_track_idx = 0
 is_playing = False
 is_shuffle = False
 volume = 0.7
@@ -115,6 +115,12 @@ cursor_idx = 0
 scroll_offset = 0
 menu_items = []
 bt_devices = []
+wifi_profiles = []
+wifi_status_msg = ""
+
+AP_PROFILE_NAME = "Pi-DAP-AP"
+AP_SSID = "Pi-DAP"
+AP_PASS = "DAP76015"
 
 menu_partial_count = 0
 
@@ -161,7 +167,7 @@ def get_ip_address():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except:
+    except Exception:
         return "未接続"
 
 # --- 5.1 Wi-Fi / Bluetooth rfkill 制御関数 ---
@@ -198,6 +204,130 @@ def toggle_rfkill(dev_type):
         time.sleep(0.2)
     except Exception:
         pass
+
+# --- 5.2 Wi-Fi & AP 制御関数 ---
+def ensure_ap_profile_exists():
+    try:
+        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME", "connection", "show"], text=True, errors='ignore')
+        if AP_PROFILE_NAME not in res.splitlines():
+            subprocess.run([
+                "sudo", "nmcli", "connection", "add", "type", "wifi",
+                "ifname", "wlan0", "mode", "ap",
+                "con-name", AP_PROFILE_NAME, "ssid", AP_SSID,
+                "--", "802-11-wireless-security.key-mgmt", "wpa-psk",
+                "802-11-wireless-security.psk", AP_PASS
+            ], check=True)
+            subprocess.run([
+                "sudo", "nmcli", "connection", "modify", AP_PROFILE_NAME,
+                "ipv4.addresses", "192.168.50.1/24", "ipv4.method", "shared"
+            ], check=True)
+    except Exception:
+        pass
+
+ensure_ap_profile_exists()
+
+def is_ap_mode_active():
+    try:
+        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"], text=True, errors='ignore')
+        for line in res.strip().split('\n'):
+            parts = line.split(':')
+            if len(parts) >= 1 and parts[0] == AP_PROFILE_NAME:
+                return True
+    except Exception:
+        pass
+    return False
+
+def toggle_ap_mode():
+    global wifi_status_msg
+    active = is_ap_mode_active()
+    def _do_toggle():
+        global wifi_status_msg
+        with state_lock:
+            wifi_status_msg = "AP起動中..." if not active else "AP停止中..."
+            request_display_update(is_full_refresh=False)
+
+        try:
+            if not active:
+                subprocess.run(["sudo", "nmcli", "connection", "up", "id", AP_PROFILE_NAME], timeout=15)
+                msg = "AP起動完了"
+            else:
+                subprocess.run(["sudo", "nmcli", "connection", "down", "id", AP_PROFILE_NAME], timeout=15)
+                msg = "AP停止完了"
+        except Exception:
+            msg = "切替失敗"
+
+        with state_lock:
+            wifi_status_msg = msg
+            request_display_update(is_full_refresh=False)
+
+        time.sleep(2)
+        with state_lock:
+            wifi_status_msg = ""
+            update_menu_items()
+            request_display_update(is_full_refresh=True)
+
+    threading.Thread(target=_do_toggle, daemon=True).start()
+
+def get_saved_wifi_profiles():
+    profiles = []
+    active_profile_id = ""
+    try:
+        res_active = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"], text=True, errors='ignore')
+        for line in res_active.strip().split('\n'):
+            parts = line.split(':')
+            if len(parts) >= 2 and parts[1] == '802-11-wireless':
+                active_profile_id = parts[0]
+
+        res_all = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], text=True, errors='ignore')
+        for line in res_all.strip().split('\n'):
+            parts = line.split(':')
+            if len(parts) >= 2 and parts[1] == '802-11-wireless':
+                prof_name = parts[0]
+                if prof_name == AP_PROFILE_NAME:
+                    continue
+                ssid = prof_name
+                try:
+                    res_ssid = subprocess.check_output(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", prof_name], text=True, errors='ignore').strip()
+                    if res_ssid:
+                        ssid = res_ssid
+                except Exception:
+                    pass
+
+                if ssid and (prof_name, ssid, False) not in [(p[0], p[1], False) for p in profiles]:
+                    is_active = (prof_name == active_profile_id)
+                    profiles.append((prof_name, ssid, is_active))
+    except Exception:
+        pass
+    return profiles
+
+def connect_wifi_profile(prof_name, ssid):
+    global wifi_status_msg
+    def _do_connect():
+        global wifi_status_msg
+        with state_lock:
+            wifi_status_msg = f"接続中: {ssid}"
+            request_display_update(is_full_refresh=False)
+        
+        try:
+            res = subprocess.run(["sudo", "nmcli", "connection", "up", "id", prof_name], capture_output=True, text=True, timeout=15)
+            if res.returncode == 0:
+                msg = f"接続完了: {ssid}"
+            else:
+                msg = "接続失敗"
+        except Exception:
+            msg = "エラー発生"
+            
+        with state_lock:
+            wifi_status_msg = msg
+            request_display_update(is_full_refresh=False)
+            
+        time.sleep(2)
+        with state_lock:
+            wifi_status_msg = ""
+            update_menu_items()
+            request_display_update(is_full_refresh=True)
+
+    threading.Thread(target=_do_connect, daemon=True).start()
 
 def get_track_duration_sec(filepath):
     if not filepath or not os.path.exists(filepath):
@@ -337,6 +467,7 @@ def display_worker():
                 sel_alb = selected_album
                 playing = is_playing
                 cur_vol = volume
+                w_status = wifi_status_msg
                 
                 pos_ms = pygame.mixer.music.get_pos() if playing else track_paused_time
                 current_sec = max(0, pos_ms // 1000) if pos_ms >= 0 else 0
@@ -400,23 +531,28 @@ def display_worker():
 
             else:
                 header_text = "メニュー"
-                if scr == "MENU_SYS": header_text = "メニュー > システム"
+                if scr == "MENU_CONN": header_text = "メニュー > 接続設定"
+                elif scr == "MENU_WIFI": header_text = "接続設定 > Wi-Fi"
+                elif scr == "MENU_BT": header_text = "接続設定 > Bluetooth"
+                elif scr == "MENU_SYS": header_text = "メニュー > システム"
                 elif scr == "MENU_ALBUMS": header_text = "メニュー > アルバム"
                 elif scr == "MENU_TRACKS": header_text = truncate_by_width(f"アルバム > {sel_alb}", font_main, 230) if sel_alb else "アルバム"
-                elif scr == "MENU_BT": header_text = "メニュー > Bluetooth"
 
                 draw.text((8, 2), header_text, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
-                start_y = 20
-                line_height = 19
-                visible_items = m_items[sc_off : sc_off + 5]
-                for i, item in enumerate(visible_items):
-                    actual_idx = sc_off + i
-                    y = start_y + (i * line_height)
-                    prefix = "> " if actual_idx == cur_idx else "  "
-                    disp_item = truncate_by_width(f"{prefix}{item}", font_main, 230)
-                    draw.text((8, y), disp_item, font=font_main, fill=0)
+                if w_status:
+                    draw.text((8, 45), truncate_by_width(w_status, font_title, 230), font=font_title, fill=0)
+                else:
+                    start_y = 20
+                    line_height = 19
+                    visible_items = m_items[sc_off : sc_off + 5]
+                    for i, item in enumerate(visible_items):
+                        actual_idx = sc_off + i
+                        y = start_y + (i * line_height)
+                        prefix = "> " if actual_idx == cur_idx else "  "
+                        disp_item = truncate_by_width(f"{prefix}{item}", font_main, 230)
+                        draw.text((8, y), disp_item, font=font_main, fill=0)
 
             if is_full_refresh:
                 epd.init()
@@ -425,28 +561,44 @@ def display_worker():
                 epd.displayPartial(epd.getbuffer(image))
 
             display_queue.task_done()
-        except Exception as e:
+        except Exception:
             time.sleep(0.1)
 
 threading.Thread(target=display_worker, daemon=True).start()
 
 def update_menu_items():
-    global menu_items, cursor_idx, scroll_offset, bt_devices
+    global menu_items, cursor_idx, scroll_offset, bt_devices, wifi_profiles
     cursor_idx = 0
     scroll_offset = 0
 
     if current_screen == "MENU_TOP":
         shuf_str = "ON" if is_shuffle else "OFF"
-        menu_items = [f"シャッフル: {shuf_str}", "Bluetooth設定", "システム設定", "アルバム"]
-    elif current_screen == "MENU_SYS":
-        wifi_on, bt_on = get_rfkill_status()
+        menu_items = [f"シャッフル: {shuf_str}", "接続設定", "システム設定", "アルバム"]
+    elif current_screen == "MENU_CONN":
+        ap_str = "ON" if is_ap_mode_active() else "OFF"
+        menu_items = [
+            "../ (戻る)",
+            "Wi-Fi設定",
+            "Bluetooth設定",
+            f"APモード: {ap_str}"
+        ]
+    elif current_screen == "MENU_WIFI":
+        wifi_on, _ = get_rfkill_status()
         wifi_str = "ON" if wifi_on else "OFF"
+        wifi_profiles = get_saved_wifi_profiles()
+        menu_items = ["../ (戻る)", f"Wi-Fi機能: {wifi_str}"]
+        for prof_name, ssid, is_active in wifi_profiles:
+            active_mark = " (接続中)" if is_active else ""
+            menu_items.append(f"{ssid}{active_mark}")
+    elif current_screen == "MENU_BT":
+        bt_devices = get_bt_devices()
+        _, bt_on = get_rfkill_status()
         bt_str = "ON" if bt_on else "OFF"
+        menu_items = ["../ (戻る)", f"Bluetooth機能: {bt_str}", "機器を検索/更新"] + [f"接続: {name}" for mac, name in bt_devices]
+    elif current_screen == "MENU_SYS":
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
-            f"Wi-Fi: {wifi_str}",
-            f"Bluetooth: {bt_str}",
             f"IPアドレス: {get_ip_address()}",
             "再起動",
             "シャットダウン"
@@ -458,9 +610,6 @@ def update_menu_items():
         track_paths = albums_dict.get(selected_album, [])
         track_names = [os.path.splitext(os.path.basename(p))[0] for p in track_paths]
         menu_items = ["../ (戻る)"] + track_names
-    elif current_screen == "MENU_BT":
-        bt_devices = get_bt_devices()
-        menu_items = ["../ (戻る)", "機器を検索/更新"] + [f"接続: {name}" for mac, name in bt_devices]
 
 def reset_inactivity_timer():
     global last_user_action_time
@@ -506,7 +655,9 @@ def on_btn_menu_or_select():
                 selected = menu_items[cursor_idx]
 
                 if selected.startswith("../"):
-                    if current_screen == "MENU_TRACKS":
+                    if current_screen in ["MENU_WIFI", "MENU_BT"]:
+                        current_screen = "MENU_CONN"
+                    elif current_screen == "MENU_TRACKS":
                         current_screen = "MENU_ALBUMS"
                     else:
                         current_screen = "MENU_TOP"
@@ -519,8 +670,8 @@ def on_btn_menu_or_select():
                         toggle_shuffle()
                         update_menu_items()
                         request_display_update(is_full_refresh=False)
-                    elif selected == "Bluetooth設定":
-                        current_screen = "MENU_BT"
+                    elif selected == "接続設定":
+                        current_screen = "MENU_CONN"
                         update_menu_items()
                         request_display_update(is_full_refresh=True)
                     elif selected == "システム設定":
@@ -531,6 +682,55 @@ def on_btn_menu_or_select():
                         current_screen = "MENU_ALBUMS"
                         update_menu_items()
                         request_display_update(is_full_refresh=True)
+
+                elif current_screen == "MENU_CONN":
+                    if selected == "Wi-Fi設定":
+                        current_screen = "MENU_WIFI"
+                        update_menu_items()
+                        request_display_update(is_full_refresh=True)
+                    elif selected == "Bluetooth設定":
+                        current_screen = "MENU_BT"
+                        update_menu_items()
+                        request_display_update(is_full_refresh=True)
+                    elif selected.startswith("APモード:"):
+                        toggle_ap_mode()
+
+                elif current_screen == "MENU_WIFI":
+                    if selected.startswith("Wi-Fi機能:"):
+                        toggle_rfkill("wifi")
+                        update_menu_items()
+                        request_display_update(is_full_refresh=False)
+                    else:
+                        prof_idx = cursor_idx - 2
+                        if 0 <= prof_idx < len(wifi_profiles):
+                            target_prof = wifi_profiles[prof_idx][0]
+                            target_ssid = wifi_profiles[prof_idx][1]
+                            connect_wifi_profile(target_prof, target_ssid)
+
+                elif current_screen == "MENU_BT":
+                    if selected.startswith("Bluetooth機能:"):
+                        toggle_rfkill("bt")
+                        update_menu_items()
+                        request_display_update(is_full_refresh=False)
+                    elif selected == "機器を検索/更新":
+                        update_menu_items()
+                        request_display_update(is_full_refresh=False)
+                    elif selected.startswith("接続:"):
+                        dev_idx = cursor_idx - 3
+                        if 0 <= dev_idx < len(bt_devices):
+                            mac = bt_devices[dev_idx][0]
+                            connect_bt_device(mac)
+
+                elif current_screen == "MENU_SYS":
+                    if selected == "曲ライブラリ再読み込み":
+                        reload_music_library()
+                        request_display_update(is_full_refresh=False)
+                    elif selected == "再起動":
+                        clean_shutdown_display("Rebooting...")
+                        os.system("sudo reboot")
+                    elif selected == "シャットダウン":
+                        clean_shutdown_display("Power Off...")
+                        os.system("sudo shutdown -h now")
 
                 elif current_screen == "MENU_ALBUMS":
                     album_list = sorted(list(albums_dict.keys()))
@@ -550,35 +750,6 @@ def on_btn_menu_or_select():
                         play_current_track()
                         current_screen = "PLAY"
                         request_display_update(is_full_refresh=True)
-
-                elif current_screen == "MENU_BT":
-                    if selected == "機器を検索/更新":
-                        update_menu_items()
-                        request_display_update(is_full_refresh=False)
-                    elif selected.startswith("接続:"):
-                        dev_idx = cursor_idx - 2
-                        if 0 <= dev_idx < len(bt_devices):
-                            mac = bt_devices[dev_idx][0]
-                            connect_bt_device(mac)
-
-                elif current_screen == "MENU_SYS":
-                    if selected == "曲ライブラリ再読み込み":
-                        reload_music_library()
-                        request_display_update(is_full_refresh=False)
-                    elif selected.startswith("Wi-Fi:"):
-                        toggle_rfkill("wifi")
-                        update_menu_items()
-                        request_display_update(is_full_refresh=False)
-                    elif selected.startswith("Bluetooth:"):
-                        toggle_rfkill("bt")
-                        update_menu_items()
-                        request_display_update(is_full_refresh=False)
-                    elif selected == "再起動":
-                        clean_shutdown_display("Rebooting...")
-                        os.system("sudo reboot")
-                    elif selected == "シャットダウン":
-                        clean_shutdown_display("Power Off...")
-                        os.system("sudo shutdown -h now")
 
 def on_btn_play_or_back():
     if not debounce(): return
@@ -640,7 +811,6 @@ def on_btn_prev():
         reset_inactivity_timer()
         if playlist:
             pos_ms = pygame.mixer.music.get_pos()
-            # 3秒以上再生されている場合は曲頭に戻す、3秒未満なら前の曲へ移動
             if is_playing and pos_ms > 3000:
                 play_current_track()
             else:
@@ -701,3 +871,4 @@ try:
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
+    sys.exit(0)
