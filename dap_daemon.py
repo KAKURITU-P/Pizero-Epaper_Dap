@@ -22,7 +22,6 @@ from gpiozero import Button
 # --- mutagen によるメタデータ取得 ---
 try:
     import mutagen
-    from mutagen.easyid3 import EasyID3
     HAS_MUTAGEN = True
 except ImportError:
     HAS_MUTAGEN = False
@@ -474,19 +473,16 @@ def toggle_ap_mode():
             subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
             subprocess.run(["sudo", "systemctl", "restart", "wpa_supplicant"], check=False)
         else:
-            # 競合プロセスの制御
             subprocess.run(["sudo", "systemctl", "stop", "wpa_supplicant"], check=False)
             subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
             subprocess.run(["sudo", "pkill", "dnsmasq"], check=False)
             subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
             
-            # インターフェースの初期化とIP設定
             subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
             subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
             subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
             subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
             
-            # AP動作に必要な minimal dnsmasq 設定を一時ファイルとして生成
             dnsmasq_conf = """interface=wlan0
 dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
 dhcp-option=option:router,192.168.4.1
@@ -496,7 +492,6 @@ bind-interfaces
             with open("/tmp/dnsmasq_ap.conf", "w") as f:
                 f.write(dnsmasq_conf)
                 
-            # APとDHCPサーバーの直接立ち上げ
             subprocess.run(["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"], check=False)
             subprocess.run(["sudo", "systemctl", "start", "hostapd"], check=False)
             
@@ -555,18 +550,41 @@ def connect_to_wifi(ssid):
     threading.Thread(target=_do_connect, daemon=True).start()
 
 def get_track_duration_sec(filepath):
-    if not filepath or not os.path.exists(filepath): return 0
+    """
+    再生時間の取得ルーチン（強化版）
+    1. WAVヘッダー解析
+    2. Mutagen メタデータ解析
+    3. Pygame Sound ロードによる長さ計測 (フォールバック)
+    """
+    if not filepath or not os.path.exists(filepath):
+        return 0
+
+    # 1. WAVファイル解析
     if filepath.lower().endswith('.wav'):
         try:
             with contextlib.closing(wave.open(filepath, 'r')) as f:
                 return int(f.getnframes() / float(f.getframerate()))
-        except Exception: pass
+        except Exception:
+            pass
+
+    # 2. Mutagen によるマルチフォーマット解析
     if HAS_MUTAGEN:
         try:
             audio = mutagen.File(filepath)
-            if audio and audio.info and hasattr(audio.info, 'length'):
+            if audio and audio.info and hasattr(audio.info, 'length') and audio.info.length > 0:
                 return int(audio.info.length)
-        except Exception: pass
+        except Exception:
+            pass
+
+    # 3. Pygame Sound による予備計測
+    try:
+        snd = pygame.mixer.Sound(filepath)
+        length = int(snd.get_length())
+        if length > 0:
+            return length
+    except Exception:
+        pass
+
     return 0
 
 def get_track_artist_info(filepath):
