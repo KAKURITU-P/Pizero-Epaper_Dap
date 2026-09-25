@@ -468,22 +468,38 @@ def toggle_ap_mode():
     is_active = get_ap_status()
     try:
         if is_active:
+            subprocess.run(["sudo", "pkill", "dnsmasq"], check=False)
             subprocess.run(["sudo", "systemctl", "stop", "hostapd"], check=False)
-            subprocess.run(["sudo", "systemctl", "stop", "dnsmasq"], check=False)
             subprocess.run(["sudo", "ip", "addr", "del", "192.168.4.1/24", "dev", "wlan0"], check=False)
             subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
             subprocess.run(["sudo", "systemctl", "restart", "wpa_supplicant"], check=False)
         else:
+            # 競合プロセスの制御
             subprocess.run(["sudo", "systemctl", "stop", "wpa_supplicant"], check=False)
             subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
+            subprocess.run(["sudo", "pkill", "dnsmasq"], check=False)
             subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+            
+            # インターフェースの初期化とIP設定
             subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
             subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
             subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-            
             subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
-            subprocess.run(["sudo", "systemctl", "start", "dnsmasq"], check=False)
+            
+            # AP動作に必要な minimal dnsmasq 設定を一時ファイルとして生成
+            dnsmasq_conf = """interface=wlan0
+dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+bind-interfaces
+"""
+            with open("/tmp/dnsmasq_ap.conf", "w") as f:
+                f.write(dnsmasq_conf)
+                
+            # APとDHCPサーバーの直接立ち上げ
+            subprocess.run(["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"], check=False)
             subprocess.run(["sudo", "systemctl", "start", "hostapd"], check=False)
+            
         time.sleep(1)
     except Exception: pass
 
