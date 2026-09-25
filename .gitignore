@@ -1,7 +1,4 @@
 __pycache__/
 *.pyc
 *.log
-*.wav
-*.mp3
-*.flac
-*.m4a
+.DS_Store
