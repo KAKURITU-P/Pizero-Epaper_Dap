@@ -355,8 +355,14 @@ def display_worker():
                     draw.text((8, y), disp_item, font=font_main, fill=0)
 
             if stat_msg:
-                draw.rectangle([15, 35, 235, 85], fill=255, outline=0)
-                draw.text((20, 50), truncate_by_width(stat_msg, font_main, 200), font=font_main, fill=0)
+                lines = stat_msg.split("\n")
+                box_h = 18 + (len(lines) * 22)
+                box_y1 = max(10, (122 - box_h) // 2)
+                draw.rectangle([10, box_y1, 240, box_y1 + box_h], fill=255, outline=0)
+                y_offset = box_y1 + 8
+                for l in lines:
+                    draw.text((15, y_offset), truncate_by_width(l, font_small, 215), font=font_small, fill=0)
+                    y_offset += 20
 
             if is_full_refresh:
                 epd.init()
@@ -675,6 +681,7 @@ def update_menu_items():
             "../ (戻る)",
             "曲ライブラリ再読み込み",
             f"IP: {get_ip_address()}",
+            "ライブラリ表示",
             "アプリ再起動",
             "再起動",
             "シャットダウン"
@@ -720,7 +727,7 @@ def toggle_shuffle():
 # --- 8. ボタンイベントハンドラ ---
 def on_btn_menu_or_select():
     if not debounce(): return
-    global current_screen, selected_album, current_track_idx, playlist
+    global current_screen, selected_album, current_track_idx, playlist, status_message
     with state_lock:
         reset_inactivity_timer()
 
@@ -840,6 +847,15 @@ def on_btn_menu_or_select():
                     if selected == "曲ライブラリ再読み込み":
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
+                    elif selected == "ライブラリ表示":
+                        status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P"
+                        request_display_update(is_full_refresh=False)
+                        def _clear_status():
+                            time.sleep(3.0)
+                            global status_message
+                            status_message = ""
+                            request_display_update(is_full_refresh=False)
+                        threading.Thread(target=_clear_status, daemon=True).start()
                     elif selected == "アプリ再起動":
                         clean_shutdown_display("Restarting...")
                         subprocess.run(["sudo", "systemctl", "restart", "dap"])
