@@ -4,6 +4,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import time
 import glob
+import re
 import socket
 import random
 import subprocess
@@ -380,7 +381,6 @@ def set_audio_output(mode, mac=None):
     if mode == "BT":
         status_message = "Bluetooth準備中..."
         request_display_update(is_full_refresh=False)
-        # サービス名（bluealsa / bluez-alsa）両対応で再起動
         subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
         subprocess.run(["sudo", "systemctl", "restart", "bluez-alsa"], check=False)
         time.sleep(1.0)
@@ -475,7 +475,6 @@ def toggle_ap_mode():
             subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
             subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
             
-            # 固定IP付与 & サービス起動
             subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
             subprocess.run(["sudo", "systemctl", "start", "dnsmasq"], check=False)
             subprocess.run(["sudo", "systemctl", "start", "hostapd"], check=False)
@@ -485,12 +484,27 @@ def toggle_ap_mode():
 def get_saved_wifi_ssids():
     ssids = []
     try:
+        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], text=True)
+        for line in res.strip().splitlines():
+            if ":" in line:
+                name, conn_type = line.split(":", 1)
+                if conn_type == "802-11-wireless" and name != "Pi-DAP-AP":
+                    ssids.append(name)
+    except Exception:
+        pass
+
+    try:
         res = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True)
         lines = res.strip().splitlines()[1:]
         for line in lines:
-            parts = line.split('\t')
-            if len(parts) >= 2 and parts[1]: ssids.append(parts[1])
-    except Exception: pass
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                ssid_name = parts[1]
+                if ssid_name not in ["any", "ssid"] and ssid_name != "Pi-DAP-AP":
+                    ssids.append(ssid_name)
+    except Exception:
+        pass
+
     return list(set(ssids))
 
 def connect_to_wifi(ssid):
@@ -500,15 +514,17 @@ def connect_to_wifi(ssid):
         request_display_update(is_full_refresh=False)
         try:
             subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
-            res = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True)
-            net_id = None
-            for line in res.strip().splitlines()[1:]:
-                parts = line.split('\t')
-                if len(parts) >= 2 and parts[1] == ssid:
-                    net_id = parts[0]
-                    break
-            if net_id is not None:
-                subprocess.run(["sudo", "wpa_cli", "-i", "wlan0", "select_network", net_id])
+            res = subprocess.run(["nmcli", "connection", "up", ssid], capture_output=True, text=True)
+            if res.returncode != 0:
+                res_wpa = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True)
+                net_id = None
+                for line in res_wpa.strip().splitlines()[1:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[1] == ssid:
+                        net_id = parts[0]
+                        break
+                if net_id is not None:
+                    subprocess.run(["sudo", "wpa_cli", "-i", "wlan0", "select_network", net_id])
         except Exception: pass
         time.sleep(3)
         status_message = ""
