@@ -181,7 +181,7 @@ def get_current_sec():
     elapsed = time.time() - start_time - paused_duration
     return max(0, int(elapsed))
 
-# --- 5. 画面状態 ---
+# --- 5. 画面状態 & チャタリング対策 ---
 current_screen = "PLAY"
 last_user_action_time = time.time()
 cursor_idx = 0
@@ -195,8 +195,10 @@ status_message = ""
 is_bt_scanning = False
 
 menu_partial_count = 0
-last_button_time = 0.0
-DEBOUNCE_TIME = 0.2
+
+# 各ボタンごとのデバウンス管理
+last_btn_times = {}
+DEBOUNCE_TIME = 0.25
 
 state_lock = threading.Lock()
 
@@ -223,12 +225,13 @@ def truncate_by_width(text, font, max_px):
 
     return truncated + ellipsis
 
-def debounce():
-    global last_button_time
+def debounce(btn_name):
+    global last_btn_times
     now = time.time()
-    if now - last_button_time < DEBOUNCE_TIME:
+    last_time = last_btn_times.get(btn_name, 0.0)
+    if now - last_time < DEBOUNCE_TIME:
         return False
-    last_button_time = now
+    last_btn_times[btn_name] = now
     return True
 
 def get_ip_address():
@@ -311,13 +314,14 @@ def display_worker():
                 draw.text((8, 23), disp_title, font=font_title, fill=0)
                 draw.text((8, 48), disp_artist, font=font_small, fill=0)
 
+                # プログレスバー（8段階セグメント分け描画）
                 bar_x1, bar_y1 = 8, 70
                 bar_x2, bar_y2 = 240, 82
                 draw.rectangle([bar_x1, bar_y1, bar_x2, bar_y2], outline=0, fill=255, width=1)
 
                 if tot_sec > 0:
                     progress_ratio = min(1.0, current_sec / float(tot_sec))
-                    segment = int(progress_ratio * 8)
+                    segment = int(progress_ratio * 8)  # 0〜8の9段階
                     if segment > 0:
                         max_inner_w = bar_x2 - bar_x1 - 4
                         fill_w = int(max_inner_w * (segment / 8.0))
@@ -550,16 +554,9 @@ def connect_to_wifi(ssid):
     threading.Thread(target=_do_connect, daemon=True).start()
 
 def get_track_duration_sec(filepath):
-    """
-    再生時間の取得ルーチン（強化版）
-    1. WAVヘッダー解析
-    2. Mutagen メタデータ解析
-    3. Pygame Sound ロードによる長さ計測 (フォールバック)
-    """
     if not filepath or not os.path.exists(filepath):
         return 0
 
-    # 1. WAVファイル解析
     if filepath.lower().endswith('.wav'):
         try:
             with contextlib.closing(wave.open(filepath, 'r')) as f:
@@ -567,7 +564,6 @@ def get_track_duration_sec(filepath):
         except Exception:
             pass
 
-    # 2. Mutagen によるマルチフォーマット解析
     if HAS_MUTAGEN:
         try:
             audio = mutagen.File(filepath)
@@ -576,7 +572,6 @@ def get_track_duration_sec(filepath):
         except Exception:
             pass
 
-    # 3. Pygame Sound による予備計測
     try:
         snd = pygame.mixer.Sound(filepath)
         length = int(snd.get_length())
@@ -760,7 +755,7 @@ def toggle_shuffle():
 
 # --- 8. ボタンイベントハンドラ ---
 def on_btn_menu_or_select():
-    if not debounce(): return
+    if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message
     with state_lock:
         reset_inactivity_timer()
@@ -901,7 +896,7 @@ def on_btn_menu_or_select():
                         subprocess.run(["sudo", "shutdown", "-h", "now"])
 
 def on_btn_play_or_back():
-    if not debounce(): return
+    if not debounce("btn_play_back"): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
     with state_lock:
         reset_inactivity_timer()
@@ -927,7 +922,7 @@ def on_btn_play_or_back():
             request_display_update(is_full_refresh=True)
 
 def on_btn_up_action():
-    if not debounce(): return
+    if not debounce("btn_up_act"): return
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
@@ -942,7 +937,7 @@ def on_btn_up_action():
                 request_display_update(is_full_refresh=False)
 
 def on_btn_down_action():
-    if not debounce(): return
+    if not debounce("btn_down_act"): return
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
@@ -957,7 +952,7 @@ def on_btn_down_action():
                 request_display_update(is_full_refresh=False)
 
 def on_btn_prev():
-    if not debounce(): return
+    if not debounce("btn_prev"): return
     global current_track_idx
     with state_lock:
         reset_inactivity_timer()
@@ -970,7 +965,7 @@ def on_btn_prev():
             request_display_update(is_full_refresh=True)
 
 def on_btn_next():
-    if not debounce(): return
+    if not debounce("btn_next"): return
     global current_track_idx
     with state_lock:
         reset_inactivity_timer()
@@ -998,12 +993,13 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 try:
     request_display_update(is_full_refresh=True)
     while True:
-        time.sleep(0.5)
+        time.sleep(0.2)
         now = time.time()
 
         with state_lock:
             cur_sec = get_current_sec()
 
+            # セグメント変化検知によるプログレスバー更新
             if current_screen == "PLAY" and is_playing and total_duration_sec > 0:
                 progress_ratio = min(1.0, cur_sec / float(total_duration_sec))
                 current_segment = int(progress_ratio * 8)
