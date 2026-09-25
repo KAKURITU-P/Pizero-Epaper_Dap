@@ -847,7 +847,7 @@ def on_btn_menu_or_select():
                     if selected == "曲ライブラリ再読み込み":
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
-                    elif selected == "ライブラリ表示":
+                    elif selected == "ライセンス表示":
                         status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P"
                         request_display_update(is_full_refresh=False)
                         def _clear_status():
