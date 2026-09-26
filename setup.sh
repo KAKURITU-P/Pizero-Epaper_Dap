@@ -8,6 +8,8 @@ sudo apt install -y \
     python3-pygame \
     python3-pil \
     python3-gpiozero \
+    python3-spidev \
+    python3-rpi.gpio \
     bluetooth \
     bluealsa \
     bluez-tools \
@@ -17,7 +19,8 @@ sudo apt install -y \
     network-manager \
     fonts-takao-gothic \
     alsa-utils \
-    libasound2-dev
+    libasound2-dev \
+    i2c-tools
 
 echo "=== 2. Pythonライブラリのインストール ==="
 pip3 install mutagen || pip3 install mutagen --break-system-packages
@@ -34,4 +37,4 @@ if [ -f /home/pi/dap/dap.service ]; then
 fi
 
 echo "=== セットアップが完了しました！ ==="
-echo "手動で再起動、または 'sudo systemctl start dap' でサービスを開始してください。"
+echo "※ Raspberry Pi 設定で SPI が有効（sudo raspi-config -> Interface Options -> SPI）になっていることを確認してください。"
