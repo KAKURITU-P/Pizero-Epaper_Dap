@@ -20,7 +20,7 @@ sudo apt install -y \
     libasound2-dev
 
 echo "=== 2. Pythonライブラリのインストール ==="
-pip3 install mutagen waveshare-epd || pip3 install mutagen --break-system-packages
+pip3 install mutagen || pip3 install mutagen --break-system-packages
 
 echo "=== 3. 音楽ディレクトリの作成 ==="
 mkdir -p ~/music
