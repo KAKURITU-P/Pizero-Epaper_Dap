@@ -107,6 +107,9 @@ signal.signal(signal.SIGINT, handle_signal)
 # --- 3. フォント設定 ---
 def find_japanese_font():
     font_candidates = [
+        "/usr/share/fonts/truetype/bizud-gothic/BIZUDGothic-Regular.ttf",
+        "/usr/share/fonts/truetype/bizud-gothic/BIZUDPGothic-Regular.ttf",
+        "/usr/share/fonts/truetype/bizud-gothic/BIZUDGothic-Bold.ttf",
         "/usr/share/fonts/truetype/takao-gothic/TakaoGothic.ttf",
         "/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -114,8 +117,17 @@ def find_japanese_font():
     ]
     for path in font_candidates:
         if os.path.exists(path):
+            print(f"Using font: {path}")
             return path
+
+    bizud_fonts = glob.glob("/usr/share/fonts/**/bizud-gothic/*.ttf") + \
+                  glob.glob("/usr/share/fonts/**/bizud-gothic/*.otf")
+    if bizud_fonts:
+        print(f"Using font (glob): {bizud_fonts[0]}")
+        return bizud_fonts[0]
+
     found = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
+            glob.glob("/usr/share/fonts/**/*.otf", recursive=True) + \
             glob.glob("/usr/share/fonts/**/*.ttc", recursive=True)
     return found[0] if found else None
 
@@ -125,7 +137,8 @@ def get_font(size):
     if FONT_PATH:
         try:
             return ImageFont.truetype(FONT_PATH, size)
-        except Exception:
+        except Exception as e:
+            print(f"Font load failed: {e}")
             pass
     return ImageFont.load_default()
 
@@ -298,6 +311,7 @@ def display_worker():
                 current_sec = get_current_sec()
                 tot_sec = total_duration_sec
 
+            # メニュー画面時のみ部分更新5回毎の自動全体更新カウンタを有効化
             if scr != "PLAY":
                 if is_full_refresh:
                     menu_partial_count = 0
@@ -307,6 +321,10 @@ def display_worker():
                         menu_partial_count = 0
                     else:
                         menu_partial_count += 1
+            else:
+                # PLAY画面時：明示的にis_full_refresh=Trueで呼ばれた場合はカウンタに関わらず確実に全体更新
+                if is_full_refresh:
+                    menu_partial_count = 0
 
             image = Image.new('1', (epd.height, epd.width), 255)
             draw = ImageDraw.Draw(image)
@@ -399,7 +417,6 @@ threading.Thread(target=display_worker, daemon=True).start()
 
 # --- 7. Bluetooth 接続 & オーディオ出力切替 ---
 def restart_self():
-    """Pythonプロセス自体を再起動してALSAドライバの状態を完全リセット"""
     try:
         pygame.mixer.music.stop()
         pygame.mixer.quit()
@@ -409,13 +426,11 @@ def restart_self():
     os.execv(python, [python] + sys.argv)
 
 def connect_bt_device(mac, name="Unknown"):
-    """指定MACへ接続し、.asoundrc作成後、スクリプト自前再起動でALSAを完全同期"""
     global status_message, connected_bt_mac, audio_output_mode
     
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
     
-    # 1. ~/.asoundrc を Bluetooth(bluealsa)用に書き換え
     config_content = f"""pcm.!default {{
     type plug
     slave.pcm {{
@@ -434,27 +449,22 @@ ctl.!default {{
     except Exception as e:
         print(f"asoundrc write error: {e}")
 
-    # 2. BlueALSA サービスのリセット
     subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
     time.sleep(0.5)
 
-    # 3. bluetoothctl で trust & connect 実行
     cmd = f"echo -e 'trust {mac}\nconnect {mac}\nquit' | bluetoothctl"
     subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.5)
 
-    # 4. 音量を最大化（BlueALSA側）
     subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
 
     status_message = f"再起動中: {name[:10]}"
     request_display_update(is_full_refresh=True)
     time.sleep(0.5)
 
-    # 5. プロセス自体を再起動して ALSA/Pygame を BT 宛てにクリーン初期化
     restart_self()
 
 def set_audio_output(mode, mac=None):
-    """PWM / BT の出力モード切替"""
     global audio_output_mode, status_message, connected_bt_mac
 
     status_message = f"切替中: {mode}"
