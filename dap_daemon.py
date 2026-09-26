@@ -33,6 +33,7 @@ if os.path.exists(asoundrc_path):
 else:
     audio_output_mode = "PWM"
 
+# デフォルト接続先
 connected_bt_mac = "25:02:27:B5:81:BE"    # MOONDROP Ultrasonic
 
 # --- ALSA Cライブラリ読み込み ---
@@ -58,8 +59,10 @@ def safe_init_audio():
             except Exception:
                 pass
 
+        time.sleep(0.2)
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
         pygame.mixer.music.set_volume(volume)
+        print(f"Audio initialized in [{audio_output_mode}] mode.")
     except Exception as e:
         print(f"Audio init failed ({e}).")
 
@@ -196,7 +199,6 @@ is_bt_scanning = False
 
 menu_partial_count = 0
 
-# 各ボタンごとのデバウンス管理
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
 
@@ -250,6 +252,23 @@ def get_ip_address():
         except Exception:
             pass
         return "未接続"
+
+def get_current_wifi_ssid():
+    try:
+        res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
+        ssid = res.strip()
+        if ssid:
+            return ssid
+    except Exception:
+        pass
+    return None
+
+def is_bt_connected(mac):
+    try:
+        res = subprocess.check_output(["bluetoothctl", "info", mac], text=True, errors='ignore')
+        return "Connected: yes" in res
+    except Exception:
+        return False
 
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
@@ -314,14 +333,13 @@ def display_worker():
                 draw.text((8, 23), disp_title, font=font_title, fill=0)
                 draw.text((8, 48), disp_artist, font=font_small, fill=0)
 
-                # プログレスバー（8段階セグメント分け描画）
                 bar_x1, bar_y1 = 8, 70
                 bar_x2, bar_y2 = 240, 82
                 draw.rectangle([bar_x1, bar_y1, bar_x2, bar_y2], outline=0, fill=255, width=1)
 
                 if tot_sec > 0:
                     progress_ratio = min(1.0, current_sec / float(tot_sec))
-                    segment = int(progress_ratio * 8)  # 0〜8の9段階
+                    segment = int(progress_ratio * 8)
                     if segment > 0:
                         max_inner_w = bar_x2 - bar_x1 - 4
                         fill_w = int(max_inner_w * (segment / 8.0))
@@ -379,32 +397,26 @@ def display_worker():
 
 threading.Thread(target=display_worker, daemon=True).start()
 
-# --- オーディオ出力切替 ---
-def set_audio_output(mode, mac=None):
-    global audio_output_mode, status_message
+# --- 7. Bluetooth 接続 & オーディオ出力切替 ---
+def restart_self():
+    """Pythonプロセス自体を再起動してALSAドライバの状態を完全リセット"""
+    try:
+        pygame.mixer.music.stop()
+        pygame.mixer.quit()
+    except Exception:
+        pass
+    python = sys.executable
+    os.execv(python, [python] + sys.argv)
+
+def connect_bt_device(mac, name="Unknown"):
+    """指定MACへ接続し、.asoundrc作成後、スクリプト自前再起動でALSAを完全同期"""
+    global status_message, connected_bt_mac, audio_output_mode
     
-    status_message = f"切り替え中: {mode}"
+    status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
-    time.sleep(0.3)
-
-    if mode == "BT":
-        status_message = "Bluetooth準備中..."
-        request_display_update(is_full_refresh=False)
-        subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
-        subprocess.run(["sudo", "systemctl", "restart", "bluez-alsa"], check=False)
-        time.sleep(1.0)
-        if mac:
-            subprocess.run(f"echo 'connect {mac}' | bluetoothctl", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(1.5)
-
-    if mode == "PWM":
-        if os.path.exists(asoundrc_path):
-            try: os.remove(asoundrc_path)
-            except Exception: pass
-        audio_output_mode = "PWM"
-
-    elif mode == "BT" and mac:
-        config_content = f"""pcm.!default {{
+    
+    # 1. ~/.asoundrc を Bluetooth(bluealsa)用に書き換え
+    config_content = f"""pcm.!default {{
     type plug
     slave.pcm {{
         type bluealsa
@@ -416,23 +428,62 @@ ctl.!default {{
     type bluealsa
 }}
 """
-        try:
-            with open(asoundrc_path, "w") as f:
-                f.write(config_content)
-        except Exception: pass
-        audio_output_mode = "BT"
+    try:
+        with open(asoundrc_path, "w") as f:
+            f.write(config_content)
+    except Exception as e:
+        print(f"asoundrc write error: {e}")
 
-    status_message = "音声出力リセット中..."
-    request_display_update(is_full_refresh=False)
+    # 2. BlueALSA サービスのリセット
+    subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
     time.sleep(0.5)
 
-    safe_init_audio()
+    # 3. bluetoothctl で trust & connect 実行
+    cmd = f"echo -e 'trust {mac}\nconnect {mac}\nquit' | bluetoothctl"
+    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1.5)
 
-    status_message = ""
-    update_menu_items()
+    # 4. 音量を最大化（BlueALSA側）
+    subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
+
+    status_message = f"再起動中: {name[:10]}"
     request_display_update(is_full_refresh=True)
+    time.sleep(0.5)
 
-# --- 7. Bluetooth / Wi-Fi / AP 関連 ---
+    # 5. プロセス自体を再起動して ALSA/Pygame を BT 宛てにクリーン初期化
+    restart_self()
+
+def set_audio_output(mode, mac=None):
+    """PWM / BT の出力モード切替"""
+    global audio_output_mode, status_message, connected_bt_mac
+
+    status_message = f"切替中: {mode}"
+    request_display_update(is_full_refresh=False)
+
+    if mode == "BT":
+        target_mac = mac or connected_bt_mac
+        if target_mac:
+            connect_bt_device(target_mac, "Bluetooth")
+        else:
+            status_message = "MAC未設定"
+            request_display_update(is_full_refresh=False)
+            time.sleep(1.0)
+            status_message = ""
+
+    elif mode == "PWM":
+        if os.path.exists(asoundrc_path):
+            try:
+                os.remove(asoundrc_path)
+            except Exception as e:
+                print(f"asoundrc remove error: {e}")
+        
+        audio_output_mode = "PWM"
+        safe_init_audio()
+        status_message = ""
+        update_menu_items()
+        request_display_update(is_full_refresh=True)
+
+# --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
     wifi_enabled, bt_enabled = True, True
     try:
@@ -549,6 +600,7 @@ def connect_to_wifi(ssid):
         except Exception: pass
         time.sleep(3)
         status_message = ""
+        update_menu_items()
         request_display_update(is_full_refresh=False)
 
     threading.Thread(target=_do_connect, daemon=True).start()
@@ -600,14 +652,17 @@ def format_time_str(seconds):
 
 # --- Bluetooth 区分処理 ---
 def get_bt_paired_devices():
-    devs = [("25:02:27:B5:81:BE", "Ultrasonic")]
+    devs = []
     try:
         res = subprocess.check_output(["bluetoothctl", "paired-devices"], text=True, errors='ignore')
         for line in res.strip().splitlines():
             parts = line.split(' ', 2)
-            if len(parts) >= 3 and not any(d[0] == parts[1] for d in devs):
+            if len(parts) >= 3:
                 devs.append((parts[1], parts[2].strip()))
     except Exception: pass
+    
+    if not devs and connected_bt_mac:
+        devs.append((connected_bt_mac, "Ultrasonic"))
     return devs
 
 def trigger_bt_scan():
@@ -635,28 +690,6 @@ def trigger_bt_scan():
         request_display_update(is_full_refresh=False)
     threading.Thread(target=_scan_thread, daemon=True).start()
 
-def connect_bt_device(mac, name):
-    def _do_pair_and_connect():
-        global status_message
-        disp_name = name[:10]
-        status_message = f"接続中: {disp_name}"
-        request_display_update(is_full_refresh=False)
-        try:
-            p = subprocess.Popen(["bluetoothctl"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            commands = f"power on\nagent on\ndefault-agent\npair {mac}\ntrust {mac}\nconnect {mac}\nquit\n"
-            p.communicate(input=commands, timeout=12)
-            status_message = f"接続完了: {disp_name}"
-            request_display_update(is_full_refresh=False)
-            time.sleep(1.5)
-            set_audio_output("BT", mac)
-        except Exception:
-            status_message = "接続失敗"
-            request_display_update(is_full_refresh=False)
-            time.sleep(2)
-            status_message = ""
-            request_display_update(is_full_refresh=False)
-    threading.Thread(target=_do_pair_and_connect, daemon=True).start()
-
 def update_menu_items():
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids
     cursor_idx = 0
@@ -679,10 +712,18 @@ def update_menu_items():
     elif current_screen == "MENU_WIFI":
         wifi_on, _ = get_rfkill_status()
         saved_wifi_ssids = get_saved_wifi_ssids() if wifi_on else []
+        current_ssid = get_current_wifi_ssid() if wifi_on else None
+        
         items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_on else 'OFF'}"]
         if wifi_on:
-            items.extend([f"接続: {ssid}" for ssid in saved_wifi_ssids] if saved_wifi_ssids else ["(記憶されたWi-Fiなし)"])
-        else: items.append("(Wi-Fi OFF中)")
+            if saved_wifi_ssids:
+                for ssid in saved_wifi_ssids:
+                    connected_label = " (接続済)" if current_ssid and ssid == current_ssid else ""
+                    items.append(f"接続: {ssid}{connected_label}")
+            else:
+                items.append("(記憶されたWi-Fiなし)")
+        else:
+            items.append("(Wi-Fi OFF中)")
         menu_items = items
 
     elif current_screen == "MENU_BT":
@@ -697,7 +738,9 @@ def update_menu_items():
     elif current_screen == "MENU_BT_PAIRED":
         bt_paired_devices = get_bt_paired_devices()
         items = ["../ (戻る)"]
-        items.extend([f"接続: {name}" for _, name in bt_paired_devices])
+        for mac, name in bt_paired_devices:
+            connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
+            items.append(f"接続: {name}{connected_label}")
         menu_items = items
 
     elif current_screen == "MENU_BT_SCAN":
@@ -753,7 +796,11 @@ def toggle_shuffle():
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
 
-# --- 8. ボタンイベントハンドラ ---
+# --- 9. ボタンイベントハンドラ ---
+def parse_clean_name(selected_str, prefix):
+    raw = selected_str.replace(prefix, "").strip()
+    return raw.replace(" (接続済)", "").strip()
+
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message
@@ -816,7 +863,8 @@ def on_btn_menu_or_select():
                         update_menu_items()
                         request_display_update(is_full_refresh=False)
                     elif selected.startswith("接続:"):
-                        connect_to_wifi(selected.replace("接続: ", "").strip())
+                        clean_ssid = parse_clean_name(selected, "接続:")
+                        connect_to_wifi(clean_ssid)
 
                 elif current_screen == "MENU_BT":
                     if selected.startswith("Bluetooth機能:"):
@@ -837,20 +885,20 @@ def on_btn_menu_or_select():
 
                 elif current_screen == "MENU_BT_PAIRED":
                     if selected.startswith("接続:"):
-                        dev_name = selected.replace("接続: ", "").strip()
+                        dev_name = parse_clean_name(selected, "接続:")
                         for mac, name in bt_paired_devices:
                             if name == dev_name:
-                                connect_bt_device(mac, name)
+                                threading.Thread(target=connect_bt_device, args=(mac, name), daemon=True).start()
                                 break
 
                 elif current_screen == "MENU_BT_SCAN":
                     if selected == "検索開始":
                         trigger_bt_scan()
                     elif selected.startswith("ペアリング:"):
-                        dev_name = selected.replace("ペアリング: ", "").strip()
+                        dev_name = parse_clean_name(selected, "ペアリング:")
                         for mac, name in bt_scanned_devices:
                             if name == dev_name:
-                                connect_bt_device(mac, name)
+                                threading.Thread(target=connect_bt_device, args=(mac, name), daemon=True).start()
                                 break
 
                 elif current_screen == "MENU_ALBUMS":
@@ -974,7 +1022,7 @@ def on_btn_next():
             play_current_track()
             request_display_update(is_full_refresh=True)
 
-# --- 9. GPIO割り当て ---
+# --- 10. GPIO割り当て ---
 btn_up_act      = Button(22)
 btn_down_act    = Button(27)
 btn_menu_select = Button(5)
@@ -989,7 +1037,7 @@ btn_prev.when_pressed        = on_btn_prev
 btn_next.when_pressed        = on_btn_next
 btn_play_back.when_pressed   = on_btn_play_or_back
 
-# --- 10. メインループ ---
+# --- 11. メインループ ---
 try:
     request_display_update(is_full_refresh=True)
     while True:
@@ -999,7 +1047,6 @@ try:
         with state_lock:
             cur_sec = get_current_sec()
 
-            # セグメント変化検知によるプログレスバー更新
             if current_screen == "PLAY" and is_playing and total_duration_sec > 0:
                 progress_ratio = min(1.0, cur_sec / float(total_duration_sec))
                 current_segment = int(progress_ratio * 8)
