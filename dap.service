@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi-DAP E-Paper Daemon
+After=multi-user.target bluetooth.service bluealsa.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dap
+ExecStart=/usr/bin/python3 /home/pi/dap/dap_daemon.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
