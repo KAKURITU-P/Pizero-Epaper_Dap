@@ -1,6 +1,5 @@
 import sys
 import os
-sys.path.append("/home/pi/dap")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import time
@@ -27,16 +26,17 @@ try:
 except ImportError:
     HAS_MUTAGEN = False
 
-# デフォルト接続先 MAC アドレス
-connected_bt_mac = "25:02:27:B5:81:BE"
-
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
 if os.path.exists(asoundrc_path):
     audio_output_mode = "BT"
     subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+    subprocess.run(["sudo", "systemctl", "start", "bluealsad"], check=False)
 else:
     audio_output_mode = "PWM"
+
+# デフォルト接続先
+connected_bt_mac = "25:02:27:B5:81:BE"
 
 # --- ALSA Cライブラリ読み込み ---
 try:
@@ -205,6 +205,8 @@ saved_wifi_ssids = []
 status_message = ""
 is_bt_scanning = False
 
+menu_partial_count = 0
+
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
 
@@ -260,38 +262,29 @@ def get_ip_address():
         return "未接続"
 
 def get_bt_codec_info():
-    if audio_output_mode != "BT":
-        return "PWM出力中"
-    
-    mac_path_part = connected_bt_mac.replace(":", "_").lower()
-    pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dp"
-    
     try:
-        cmd = [
-            "gdbus", "call", "--system",
-            "--dest", "org.bluealsa",
-            "--object-path", pcm_path,
-            "--method", "org.freedesktop.DBus.Properties.Get",
-            "org.bluealsa.PCM", "Codec"
-        ]
-        res = subprocess.check_output(cmd, text=True, errors="ignore")
-        if "'" in res:
-            codec = res.split("'")[1]
-            return codec.upper()
-    except Exception:
-        pass
+        for cmd in [["bluealsa-cli", "status"], ["bluealsactl", "status"], ["bluealsa-cli", "info", connected_bt_mac]]:
+            try:
+                res = subprocess.check_output(cmd, text=True, errors='ignore')
+                for line in res.splitlines():
+                    if "Codec:" in line or "codec:" in line:
+                        codec = line.split(":", 1)[1].strip()
+                        return codec.upper()
+            except Exception:
+                continue
 
-    try:
-        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, errors="ignore")
-        if "Connected: yes" in res:
-            for line in res.splitlines():
-                if "Name:" in line:
-                    return line.split(":", 1)[1].strip()
-            return "A2DP接続"
+        try:
+            res = subprocess.check_output(["bluetoothctl", "info"], text=True, errors='ignore')
+            if "Connected: yes" in res:
+                return "接続中"
+        except Exception:
+            pass
+
     except Exception:
-        pass
+        return "エラー"
 
     return "未接続"
+
 def get_current_wifi_ssid():
     try:
         res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
@@ -303,8 +296,6 @@ def get_current_wifi_ssid():
     return None
 
 def is_bt_connected(mac):
-    if not mac:
-        return False
     try:
         res = subprocess.check_output(["bluetoothctl", "info", mac], text=True, errors='ignore')
         return "Connected: yes" in res
@@ -313,28 +304,19 @@ def is_bt_connected(mac):
 
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
-pending_full_refresh = False
 
 def request_display_update(is_full_refresh=False):
-    global pending_full_refresh
     with display_queue.mutex:
-        if is_full_refresh:
-            pending_full_refresh = True
         display_queue.queue.clear()
-    display_queue.put(True)
+    display_queue.put(is_full_refresh)
 
 def display_worker():
-    global pending_full_refresh
-    current_epd_mode = None
+    global menu_partial_count
+    epd_initialized = False
 
     while True:
         try:
-            _ = display_queue.get()
-            
-            with display_queue.mutex:
-                is_full = pending_full_refresh
-                pending_full_refresh = False
-
+            is_full_refresh = display_queue.get()
             with state_lock:
                 scr = current_screen
                 track_idx = current_track_idx
@@ -429,37 +411,47 @@ def display_worker():
 
             buf = epd.getbuffer(image)
 
-            if is_full or current_epd_mode is None:
+            # --- e-Paper 描画モード適切な切り替え処理 ---
+            if is_full_refresh or not epd_initialized:
                 epd.init()
                 epd.display(buf)
                 epd.displayPartBaseImage(buf)
-                current_epd_mode = "PARTIAL"
+                epd_initialized = True
             else:
-                if current_epd_mode != "PARTIAL":
+                if hasattr(epd, 'initPartial'):
                     epd.initPartial()
-                    current_epd_mode = "PARTIAL"
                 epd.displayPartial(buf)
 
             display_queue.task_done()
         except Exception as e:
             print(f"Display render error: {e}")
-            current_epd_mode = None
             time.sleep(0.1)
 
 threading.Thread(target=display_worker, daemon=True).start()
 
 # --- 7. Bluetooth 接続 & オーディオ出力切替 ---
+def restart_self():
+    try:
+        pygame.mixer.music.stop()
+        pygame.mixer.quit()
+    except Exception:
+        pass
+    python = sys.executable
+    os.execv(python, [python] + sys.argv)
+
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
-    connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
 
     config_content = f"""pcm.!default {{
-    type bluealsa
-    device "{mac}"
-    profile "a2dp"
+    type plug
+    slave.pcm {{
+        type bluealsa
+        DEV "{mac}"
+        PROFILE "a2dp-source"
+    }}
 }}
 ctl.!default {{
     type bluealsa
@@ -471,47 +463,21 @@ ctl.!default {{
     except Exception as e:
         print(f"asoundrc write error: {e}")
 
-    subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
     subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
+    subprocess.run(["sudo", "systemctl", "restart", "bluealsad"], check=False)
     time.sleep(0.5)
 
-    # --- 堅牢な Bluetooth 接続シーケンス ---
-    subprocess.run(["bluetoothctl", "power", "on"], check=False)
-    subprocess.run(["bluetoothctl", "agent", "on"], check=False)
-    subprocess.run(["bluetoothctl", "default-agent"], check=False)
-    time.sleep(0.5)
-
-    # Trust（信頼）
-    subprocess.run(["bluetoothctl", "trust", mac], check=False)
-    time.sleep(0.5)
-
-    # Pair（すでにペアリング済みで AlreadyExists が出ても無視して進む）
-    subprocess.run(["bluetoothctl", "pair", mac], check=False)
-    time.sleep(2.0)
-
-    # Connect（接続）
-    subprocess.run(["bluetoothctl", "connect", mac], check=False)
-    time.sleep(3.0)  # 接続ハンドシェイクの完了をしっかり待つ
-
-    if is_bt_connected(mac):
-        audio_output_mode = "BT"
-        
-        # amixer のエラーで処理が止まらないよう安全に呼び出し
-        try:
-            subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
-        except Exception:
-            pass
-        
-        safe_init_audio()
-        status_message = "接続成功"
-    else:
-        status_message = "接続失敗"
-
-    request_display_update(is_full_refresh=True)
+    cmd = f"echo -e 'trust {mac}\nconnect {mac}\nquit' | bluetoothctl"
+    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.5)
-    status_message = ""
-    update_menu_items()
-    request_display_update(is_full_refresh=False)
+
+    subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
+
+    status_message = f"再起動中: {name[:10]}"
+    request_display_update(is_full_refresh=True)
+    time.sleep(0.5)
+
+    restart_self()
 
 def set_audio_output(mode, mac=None):
     global audio_output_mode, status_message, connected_bt_mac
@@ -538,12 +504,9 @@ def set_audio_output(mode, mac=None):
 
         audio_output_mode = "PWM"
         safe_init_audio()
-        status_message = "PWMモード設定"
-        request_display_update(is_full_refresh=True)
-        time.sleep(1.0)
         status_message = ""
         update_menu_items()
-        request_display_update(is_full_refresh=False)
+        request_display_update(is_full_refresh=True)
 
 # --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
@@ -738,7 +701,7 @@ def get_bt_paired_devices():
     except Exception: pass
 
     if not devs and connected_bt_mac:
-        devs.append((connected_bt_mac, "Default Device"))
+        devs.append((connected_bt_mac, "Ultrasonic"))
     return devs
 
 def trigger_bt_scan():
@@ -750,7 +713,6 @@ def trigger_bt_scan():
         status_message = "BT検索中(5秒)..."
         request_display_update(is_full_refresh=False)
         try:
-            subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
             subprocess.run(["bluetoothctl", "--timeout", "5", "scan", "on"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             res = subprocess.check_output(["bluetoothctl", "devices"], text=True, errors='ignore')
             paired = [d[0] for d in get_bt_paired_devices()]
@@ -826,7 +788,7 @@ def update_menu_items():
         menu_items = items
 
     elif current_screen == "MENU_SYS":
-        bt_codec = get_bt_codec_info()
+        bt_codec = get_bt_codec_info() if audio_output_mode == "BT" else "未接続"
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
