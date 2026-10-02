@@ -1,5 +1,26 @@
+# --- バッテリー情報取得関数 (battery_daemon連携版) ---
+def get_battery_info():
+    """バッテリーの % と V を取得"""
+    pct_str = "--%"
+    volt_str = "-.--V"
+    try:
+        if os.path.exists("/tmp/battery_status"):
+            with open("/tmp/battery_status", "r") as f:
+                raw = f.read().strip()
+                if "/" in raw:
+                    parts = raw.split("/")
+                    pct_str = parts[0].strip()
+                    volt_str = parts[1].strip()
+                else:
+                    pct_str = raw
+    except Exception:
+        pass
+    return pct_str, volt_str
+
+import smbus2
 import sys
 import os
+sys.path.append("/home/pi/dap")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import time
@@ -15,7 +36,7 @@ import signal
 import contextlib
 import ctypes
 import pygame
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
 
@@ -26,17 +47,16 @@ try:
 except ImportError:
     HAS_MUTAGEN = False
 
+# デフォルト接続先 MAC アドレス
+connected_bt_mac = "25:02:27:B5:81:BE"
+
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
 if os.path.exists(asoundrc_path):
     audio_output_mode = "BT"
     subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
-    subprocess.run(["sudo", "systemctl", "start", "bluealsad"], check=False)
 else:
     audio_output_mode = "PWM"
-
-# デフォルト接続先
-connected_bt_mac = "25:02:27:B5:81:BE"
 
 # --- ALSA Cライブラリ読み込み ---
 try:
@@ -140,6 +160,7 @@ def get_font(size):
 font_title  = get_font(20)
 font_main   = get_font(14)
 font_small  = get_font(12)
+font_clock  = get_font(30)
 
 # --- 4. 音楽ライブラリ ---
 MUSIC_DIR = os.path.expanduser("~/music")
@@ -205,12 +226,14 @@ saved_wifi_ssids = []
 status_message = ""
 is_bt_scanning = False
 
-menu_partial_count = 0
-
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
 
 state_lock = threading.Lock()
+
+# イースターエッグ関連変数
+easter_click_count = 0
+last_easter_click_time = 0.0
 
 def truncate_by_width(text, font, max_px):
     def get_text_width(t):
@@ -262,26 +285,36 @@ def get_ip_address():
         return "未接続"
 
 def get_bt_codec_info():
+    if audio_output_mode != "BT":
+        return "PWM出力中"
+    
+    mac_path_part = connected_bt_mac.replace(":", "_").lower()
+    pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dp"
+    
     try:
-        for cmd in [["bluealsa-cli", "status"], ["bluealsactl", "status"], ["bluealsa-cli", "info", connected_bt_mac]]:
-            try:
-                res = subprocess.check_output(cmd, text=True, errors='ignore')
-                for line in res.splitlines():
-                    if "Codec:" in line or "codec:" in line:
-                        codec = line.split(":", 1)[1].strip()
-                        return codec.upper()
-            except Exception:
-                continue
-
-        try:
-            res = subprocess.check_output(["bluetoothctl", "info"], text=True, errors='ignore')
-            if "Connected: yes" in res:
-                return "接続中"
-        except Exception:
-            pass
-
+        cmd = [
+            "gdbus", "call", "--system",
+            "--dest", "org.bluealsa",
+            "--object-path", pcm_path,
+            "--method", "org.freedesktop.DBus.Properties.Get",
+            "org.bluealsa.PCM", "Codec"
+        ]
+        res = subprocess.check_output(cmd, text=True, errors="ignore")
+        if "'" in res:
+            codec = res.split("'")[1]
+            return codec.upper()
     except Exception:
-        return "エラー"
+        pass
+
+    try:
+        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, errors="ignore")
+        if "Connected: yes" in res:
+            for line in res.splitlines():
+                if "Name:" in line:
+                    return line.split(":", 1)[1].strip()
+            return "A2DP接続"
+    except Exception:
+        pass
 
     return "未接続"
 
@@ -296,27 +329,145 @@ def get_current_wifi_ssid():
     return None
 
 def is_bt_connected(mac):
+    if not mac:
+        return False
     try:
         res = subprocess.check_output(["bluetoothctl", "info", mac], text=True, errors='ignore')
         return "Connected: yes" in res
     except Exception:
         return False
 
+# --- ships.png (512x512 統合画像) の読み込み & クロップ処理 ---
+def get_cropped_ship(ship_index, target_height):
+    """
+    ships.png から指定の艦艇を切り出して反転・リサイズ
+    ship_index: 0=上段(戦艦), 1=中段(空母), 2=下段(巡洋艦)
+    """
+    path = "/home/pi/dap/ships.png"
+    if not os.path.exists(path):
+        return None
+
+    try:
+        img = Image.open(path).convert("L")
+        
+        # 上下を3分割（512pxを3つに切る）
+        crops = [
+            (30, 40, 480, 180),   # 戦艦エリア
+            (30, 190, 480, 330),  # 空母エリア
+            (30, 340, 480, 480)   # 巡洋艦エリア
+        ]
+        
+        crop_box = crops[ship_index]
+        cropped = img.crop(crop_box)
+
+        # 自動トリミング（余白削り）
+        bbox = cropped.getbbox()
+        if bbox:
+            cropped = cropped.crop(bbox)
+
+        # 白黒反転（黒背景→白背景、黒船影へ）
+        inverted = ImageOps.invert(cropped)
+
+        # リサイズ（比率維持）
+        aspect_ratio = inverted.width / float(inverted.height)
+        new_w = int(target_height * aspect_ratio)
+        resized = inverted.resize((new_w, target_height), Image.Resampling.LANCZOS)
+
+        # 1bit2値化 (黒=0, 白=255)
+        ship_1bit = resized.point(lambda p: 0 if p < 128 else 255, mode="1")
+        return ship_1bit
+    except Exception as e:
+        print(f"Ship crop error ({ship_index}): {e}")
+        return None
+
+def render_cat_clock(image, draw, width, height):
+    """艦影シルエット ＆ 基地ステータス時計画面"""
+    wifi_on, _ = get_rfkill_status()
+    current_ssid = get_current_wifi_ssid() if wifi_on else None
+
+    # --- 赤エリア（下部全域）：水面 ＆ クロップした艦影 ---
+    sea_level = height - 8
+    draw.rectangle([0, sea_level, width, height], fill=0)  # 水面ベタ塗り
+
+    # ships.png から切り出して配置
+    # (インデックス, 描画高さ, X座標)
+    ships_to_draw = [
+        (1, 26, 10),   # 中段: 空母 (高さ26px)
+        (0, 30, 100),  # 上段: 戦艦 (高さ30px)
+        (2, 22, 190)   # 下段: 巡洋艦 (高さ22px)
+    ]
+
+    has_drawn = False
+    for idx, target_h, pos_x in ships_to_draw:
+        ship_img = get_cropped_ship(idx, target_h)
+        if ship_img:
+            pos_y = sea_level - ship_img.height + 1
+            # 背景透過して黒部分のみ描画（白部分は透明扱いにするマスク作成）
+            mask = ship_img.point(lambda p: 255 if p == 0 else 0, mode="1")
+            image.paste(ship_img, (pos_x, pos_y), mask)
+            has_drawn = True
+
+    # フォールバック描画（画像がない場合）
+    if not has_drawn:
+        draw.polygon([(20, sea_level - 10), (28, sea_level - 2), (90, sea_level - 2), (100, sea_level - 10)], fill=0)
+        draw.polygon([(120, sea_level - 10), (128, sea_level - 2), (180, sea_level - 2), (190, sea_level - 10)], fill=0)
+
+    # --- 緑エリア（右上）：バッテリー情報 (2段表示) ---
+    pct_str, volt_str = get_battery_info()
+    draw.rectangle([width - 70, 2, width - 2, 42], outline=0, fill=255)
+    draw.text((width - 65, 5), pct_str, font=font_small, fill=0)
+    draw.text((width - 65, 22), volt_str, font=font_small, fill=0)
+
+    # --- 青エリア（左上）：枠付き基地情報 / 時計 ---
+    box_x, box_y = 5, 2
+    box_w, box_h = 165, 42
+
+    draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline=0, fill=255)
+
+    if wifi_on and current_ssid:
+        # Wi-Fi ON: SS-IDタグ ＋ 大きな時計
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 12], fill=0)
+        tag_text = truncate_by_width(f"LINK: {current_ssid}", font_small, box_w - 6)
+        draw.text((box_x + 4, box_y + 1), tag_text, font=font_small, fill=255)
+
+        cur_time = time.strftime("%H:%M")
+        draw.text((box_x + 12, box_y + 13), cur_time, font=font_clock, fill=0)
+    else:
+        # Wi-Fi OFF: [ BASE: KURE ] ＋ 呉の座標 LAT 34°14'N
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 14], fill=0)
+        draw.text((box_x + 6, box_y + 1), "[ BASE: KURE ]", font=font_small, fill=255)
+
+        draw.text((box_x + 8, box_y + 18), "LAT 34°14'N", font=font_main, fill=0)
+
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
+pending_full_refresh = False
 
 def request_display_update(is_full_refresh=False):
+    global pending_full_refresh
     with display_queue.mutex:
+        if is_full_refresh:
+            pending_full_refresh = True
         display_queue.queue.clear()
-    display_queue.put(is_full_refresh)
+    display_queue.put(True)
 
 def display_worker():
-    global menu_partial_count
-    epd_initialized = False
+    global pending_full_refresh
+    current_epd_mode = None
+    partial_refresh_count = 0
 
     while True:
         try:
-            is_full_refresh = display_queue.get()
+            _ = display_queue.get()
+            
+            with display_queue.mutex:
+                is_full = pending_full_refresh
+                pending_full_refresh = False
+
+            if partial_refresh_count >= 30:
+                is_full = True
+                partial_refresh_count = 0
+
             with state_lock:
                 scr = current_screen
                 track_idx = current_track_idx
@@ -335,7 +486,10 @@ def display_worker():
             image = Image.new('1', (epd.height, epd.width), 255)
             draw = ImageDraw.Draw(image)
 
-            if scr == "PLAY":
+            if scr == "CAT_CLOCK":
+                render_cat_clock(image, draw, epd.height, epd.width)
+
+            elif scr == "PLAY":
                 state_str = "> PLAY" if playing else "|| PAUSE"
                 vol_str = f"VOL: {int(cur_vol * 100)}%"
 
@@ -411,47 +565,51 @@ def display_worker():
 
             buf = epd.getbuffer(image)
 
-            # --- e-Paper 描画モード適切な切り替え処理 ---
-            if is_full_refresh or not epd_initialized:
+            if is_full or current_epd_mode is None:
                 epd.init()
                 epd.display(buf)
                 epd.displayPartBaseImage(buf)
-                epd_initialized = True
+                current_epd_mode = "PARTIAL"
+                partial_refresh_count = 0
             else:
-                if hasattr(epd, 'initPartial'):
+                if current_epd_mode != "PARTIAL":
                     epd.initPartial()
+                    current_epd_mode = "PARTIAL"
                 epd.displayPartial(buf)
+                partial_refresh_count += 1
 
             display_queue.task_done()
         except Exception as e:
             print(f"Display render error: {e}")
+            current_epd_mode = None
             time.sleep(0.1)
 
 threading.Thread(target=display_worker, daemon=True).start()
 
-# --- 7. Bluetooth 接続 & オーディオ出力切替 ---
-def restart_self():
-    try:
-        pygame.mixer.music.stop()
-        pygame.mixer.quit()
-    except Exception:
-        pass
-    python = sys.executable
-    os.execv(python, [python] + sys.argv)
+# --- 定期更新スレッド (Wi-Fi ON時 1分周期更新) ---
+def cat_clock_timer_thread():
+    while True:
+        time.sleep(10)
+        with state_lock:
+            if current_screen == "CAT_CLOCK":
+                wifi_on, _ = get_rfkill_status()
+                if wifi_on:
+                    request_display_update(is_full_refresh=False)
 
+threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
+
+# --- 7. Bluetooth 接続 & オーディオ出力切替 ---
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
+    connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
 
     config_content = f"""pcm.!default {{
-    type plug
-    slave.pcm {{
-        type bluealsa
-        DEV "{mac}"
-        PROFILE "a2dp-source"
-    }}
+    type bluealsa
+    device "{mac}"
+    profile "a2dp"
 }}
 ctl.!default {{
     type bluealsa
@@ -463,21 +621,41 @@ ctl.!default {{
     except Exception as e:
         print(f"asoundrc write error: {e}")
 
+    subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
     subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
-    subprocess.run(["sudo", "systemctl", "restart", "bluealsad"], check=False)
     time.sleep(0.5)
 
-    cmd = f"echo -e 'trust {mac}\nconnect {mac}\nquit' | bluetoothctl"
-    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1.5)
+    subprocess.run(["bluetoothctl", "power", "on"], check=False)
+    subprocess.run(["bluetoothctl", "agent", "on"], check=False)
+    subprocess.run(["bluetoothctl", "default-agent"], check=False)
+    time.sleep(0.5)
 
-    subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
+    subprocess.run(["bluetoothctl", "trust", mac], check=False)
+    time.sleep(0.5)
 
-    status_message = f"再起動中: {name[:10]}"
+    subprocess.run(["bluetoothctl", "pair", mac], check=False)
+    time.sleep(2.0)
+
+    subprocess.run(["bluetoothctl", "connect", mac], check=False)
+    time.sleep(3.0)
+
+    if is_bt_connected(mac):
+        audio_output_mode = "BT"
+        try:
+            subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
+        except Exception:
+            pass
+        
+        safe_init_audio()
+        status_message = "接続成功"
+    else:
+        status_message = "接続失敗"
+
     request_display_update(is_full_refresh=True)
-    time.sleep(0.5)
-
-    restart_self()
+    time.sleep(1.5)
+    status_message = ""
+    update_menu_items()
+    request_display_update(is_full_refresh=False)
 
 def set_audio_output(mode, mac=None):
     global audio_output_mode, status_message, connected_bt_mac
@@ -504,9 +682,12 @@ def set_audio_output(mode, mac=None):
 
         audio_output_mode = "PWM"
         safe_init_audio()
+        status_message = "PWMモード設定"
+        request_display_update(is_full_refresh=True)
+        time.sleep(1.0)
         status_message = ""
         update_menu_items()
-        request_display_update(is_full_refresh=True)
+        request_display_update(is_full_refresh=False)
 
 # --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
@@ -543,54 +724,57 @@ def get_ap_status():
         return False
 
 def toggle_ap_mode():
-    global status_message
-    is_active = get_ap_status()
-    try:
-        if is_active:
-            status_message = "AP OFF中..."
-            request_display_update(is_full_refresh=False)
+    def _do_toggle():
+        global status_message
+        is_active = get_ap_status()
+        try:
+            if is_active:
+                status_message = "AP OFF中..."
+                request_display_update(is_full_refresh=False)
 
-            subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-            subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
-            subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
+                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
 
-        else:
-            status_message = "AP ON中..."
-            request_display_update(is_full_refresh=False)
+            else:
+                status_message = "AP ON中..."
+                request_display_update(is_full_refresh=False)
 
-            subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
-            subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-            subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-            subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
+                subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
+                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
 
-            subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
-            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
-            subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
-            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-            subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
-            time.sleep(0.5)
+                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
+                subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
+                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
+                subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
+                time.sleep(0.5)
 
-            dnsmasq_conf = """interface=wlan0
+                dnsmasq_conf = """interface=wlan0
 dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
 bind-interfaces
 """
-            with open("/tmp/dnsmasq_ap.conf", "w") as f:
-                f.write(dnsmasq_conf)
+                with open("/tmp/dnsmasq_ap.conf", "w") as f:
+                    f.write(dnsmasq_conf)
 
-            subprocess.run(["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"], check=False)
-            subprocess.Popen(["sudo", "hostapd", "-B", "/etc/hostapd/hostapd.conf"])
+                subprocess.run(["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"], check=False)
+                subprocess.Popen(["sudo", "hostapd", "-B", "/etc/hostapd/hostapd.conf"])
 
-        time.sleep(1)
-        subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
+            time.sleep(1)
+            subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
 
-        status_message = ""
-        update_menu_items()
-        request_display_update(is_full_refresh=False)
+            status_message = ""
+            update_menu_items()
+            request_display_update(is_full_refresh=False)
 
-    except Exception as e:
-        print(f"AP Mode toggle error: {e}")
+        except Exception as e:
+            print(f"AP Mode toggle error: {e}")
+
+    threading.Thread(target=_do_toggle, daemon=True).start()
 
 def get_saved_wifi_ssids():
     ssids = []
@@ -663,14 +847,6 @@ def get_track_duration_sec(filepath):
         except Exception:
             pass
 
-    try:
-        snd = pygame.mixer.Sound(filepath)
-        length = int(snd.get_length())
-        if length > 0:
-            return length
-    except Exception:
-        pass
-
     return 0
 
 def get_track_artist_info(filepath):
@@ -701,7 +877,7 @@ def get_bt_paired_devices():
     except Exception: pass
 
     if not devs and connected_bt_mac:
-        devs.append((connected_bt_mac, "Ultrasonic"))
+        devs.append((connected_bt_mac, "Default Device"))
     return devs
 
 def trigger_bt_scan():
@@ -713,6 +889,7 @@ def trigger_bt_scan():
         status_message = "BT検索中(5秒)..."
         request_display_update(is_full_refresh=False)
         try:
+            subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
             subprocess.run(["bluetoothctl", "--timeout", "5", "scan", "on"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             res = subprocess.check_output(["bluetoothctl", "devices"], text=True, errors='ignore')
             paired = [d[0] for d in get_bt_paired_devices()]
@@ -729,17 +906,20 @@ def trigger_bt_scan():
         request_display_update(is_full_refresh=False)
     threading.Thread(target=_scan_thread, daemon=True).start()
 
-def update_menu_items():
+def update_menu_items(reset_cursor=True):
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids
-    cursor_idx = 0
-    scroll_offset = 0
+    if reset_cursor:
+        cursor_idx = 0
+        scroll_offset = 0
 
     if current_screen == "MENU_TOP":
+        pct, _ = get_battery_info()
         menu_items = [
             f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
             "アルバム",
             "接続設定",
-            "システム設定"
+            "システム設定",
+            f"バッテリー: {pct}"
         ]
     elif current_screen == "MENU_CONN":
         menu_items = [
@@ -788,7 +968,7 @@ def update_menu_items():
         menu_items = items
 
     elif current_screen == "MENU_SYS":
-        bt_codec = get_bt_codec_info() if audio_output_mode == "BT" else "未接続"
+        bt_codec = get_bt_codec_info()
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
@@ -839,6 +1019,30 @@ def toggle_shuffle():
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
 
+def exit_cat_clock_if_needed():
+    global current_screen
+    if current_screen == "CAT_CLOCK":
+        current_screen = "PLAY"
+        request_display_update(is_full_refresh=True)
+        return True
+    return False
+
+def check_easter_egg_trigger():
+    global easter_click_count, last_easter_click_time, current_screen
+    now = time.time()
+    if now - last_easter_click_time > 3.0:
+        easter_click_count = 0
+
+    easter_click_count += 1
+    last_easter_click_time = now
+
+    if easter_click_count >= 5:
+        easter_click_count = 0
+        current_screen = "CAT_CLOCK"
+        request_display_update(is_full_refresh=True)
+        return True
+    return False
+
 # --- 9. ボタンイベントハンドラ ---
 def parse_clean_name(selected_str, prefix):
     raw = selected_str.replace(prefix, "").strip()
@@ -846,13 +1050,14 @@ def parse_clean_name(selected_str, prefix):
 
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
+    if exit_cat_clock_if_needed(): return
     global current_screen, selected_album, current_track_idx, playlist, status_message
     with state_lock:
         reset_inactivity_timer()
 
         if current_screen == "PLAY":
             current_screen = "MENU_TOP"
-            update_menu_items()
+            update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
         else:
             if cursor_idx < len(menu_items):
@@ -864,46 +1069,49 @@ def on_btn_menu_or_select():
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
                     elif current_screen == "MENU_TRACKS": current_screen = "MENU_ALBUMS"
                     else: current_screen = "MENU_TOP"
-                    update_menu_items()
+                    update_menu_items(reset_cursor=True)
                     request_display_update(is_full_refresh=True)
                     return
 
                 if current_screen == "MENU_TOP":
                     if selected.startswith("シャッフル:"):
                         toggle_shuffle()
-                        update_menu_items()
+                        update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
                     elif selected == "アルバム":
                         current_screen = "MENU_ALBUMS"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "接続設定":
                         current_screen = "MENU_CONN"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "システム設定":
                         current_screen = "MENU_SYS"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
+                    elif selected.startswith("バッテリー:"):
+                        update_menu_items(reset_cursor=False)
+                        request_display_update(is_full_refresh=False)
 
                 elif current_screen == "MENU_CONN":
                     if selected == "Wi-Fi設定":
                         current_screen = "MENU_WIFI"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "Bluetooth設定":
                         current_screen = "MENU_BT"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected.startswith("APモード:"):
                         toggle_ap_mode()
-                        update_menu_items()
+                        update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
 
                 elif current_screen == "MENU_WIFI":
                     if selected.startswith("Wi-Fi機能:"):
                         toggle_rfkill("wifi")
-                        update_menu_items()
+                        update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
                     elif selected.startswith("接続:"):
                         clean_ssid = parse_clean_name(selected, "接続:")
@@ -912,18 +1120,18 @@ def on_btn_menu_or_select():
                 elif current_screen == "MENU_BT":
                     if selected.startswith("Bluetooth機能:"):
                         toggle_rfkill("bt")
-                        update_menu_items()
+                        update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
                     elif selected.startswith("出力先:"):
                         new_mode = "BT" if audio_output_mode == "PWM" else "PWM"
                         set_audio_output(new_mode, connected_bt_mac)
                     elif selected == "登録済みデバイス":
                         current_screen = "MENU_BT_PAIRED"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "新規デバイスの検索":
                         current_screen = "MENU_BT_SCAN"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
 
                 elif current_screen == "MENU_BT_PAIRED":
@@ -950,7 +1158,7 @@ def on_btn_menu_or_select():
                     if 0 <= chosen_idx < len(album_list):
                         selected_album = album_list[chosen_idx]
                         current_screen = "MENU_TRACKS"
-                        update_menu_items()
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
 
                 elif current_screen == "MENU_TRACKS":
@@ -967,14 +1175,15 @@ def on_btn_menu_or_select():
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
                     elif selected == "ライセンス表示":
-                        status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P"
-                        request_display_update(is_full_refresh=False)
-                        def _clear_status():
-                            time.sleep(3.0)
-                            global status_message
-                            status_message = ""
+                        if not check_easter_egg_trigger():
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P"
                             request_display_update(is_full_refresh=False)
-                        threading.Thread(target=_clear_status, daemon=True).start()
+                            def _clear_status():
+                                time.sleep(3.0)
+                                global status_message
+                                status_message = ""
+                                request_display_update(is_full_refresh=False)
+                            threading.Thread(target=_clear_status, daemon=True).start()
                     elif selected == "アプリ再起動":
                         clean_shutdown_display("Restarting...")
                         subprocess.run(["sudo", "systemctl", "restart", "dap"])
@@ -987,6 +1196,7 @@ def on_btn_menu_or_select():
 
 def on_btn_play_or_back():
     if not debounce("btn_play_back"): return
+    if exit_cat_clock_if_needed(): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
     with state_lock:
         reset_inactivity_timer()
@@ -1014,6 +1224,7 @@ def on_btn_play_or_back():
 
 def on_btn_up_action():
     if not debounce("btn_up_act"): return
+    if exit_cat_clock_if_needed(): return
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
@@ -1029,6 +1240,7 @@ def on_btn_up_action():
 
 def on_btn_down_action():
     if not debounce("btn_down_act"): return
+    if exit_cat_clock_if_needed(): return
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
@@ -1044,6 +1256,7 @@ def on_btn_down_action():
 
 def on_btn_prev():
     if not debounce("btn_prev"): return
+    if exit_cat_clock_if_needed(): return
     global current_track_idx
     with state_lock:
         reset_inactivity_timer()
@@ -1056,6 +1269,7 @@ def on_btn_prev():
 
 def on_btn_next():
     if not debounce("btn_next"): return
+    if exit_cat_clock_if_needed(): return
     global current_track_idx
     with state_lock:
         reset_inactivity_timer()
@@ -1064,12 +1278,14 @@ def on_btn_next():
             play_current_track(full_refresh=True)
 
 # --- 10. GPIO割り当て ---
-btn_up_act      = Button(22)
-btn_down_act    = Button(27)
-btn_menu_select = Button(5)
-btn_prev        = Button(12)
-btn_next        = Button(16)
-btn_play_back   = Button(20)
+BOUNCE_SEC = 0.1
+
+btn_up_act      = Button(22, bounce_time=BOUNCE_SEC)
+btn_down_act    = Button(27, bounce_time=BOUNCE_SEC)
+btn_menu_select = Button(5,  bounce_time=BOUNCE_SEC)
+btn_prev        = Button(12, bounce_time=BOUNCE_SEC)
+btn_next        = Button(16, bounce_time=BOUNCE_SEC)
+btn_play_back   = Button(20, bounce_time=BOUNCE_SEC)
 
 btn_up_act.when_pressed      = on_btn_up_action
 btn_down_act.when_pressed    = on_btn_down_action
@@ -1097,14 +1313,17 @@ try:
                     last_drawn_segment = current_segment
                     request_display_update(is_full_refresh=False)
 
-            if current_screen != "PLAY" and (now - last_user_action_time > 10):
+            if current_screen not in ["PLAY", "CAT_CLOCK"] and (now - last_user_action_time > 10):
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
-            if is_playing and total_duration_sec > 0 and cur_sec >= total_duration_sec:
-                if playlist:
-                    current_track_idx = (current_track_idx + 1) % len(playlist)
-                    play_current_track(full_refresh=True)
+            if is_playing:
+                music_busy = pygame.mixer.music.get_busy()
+                
+                if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
+                    if playlist:
+                        current_track_idx = (current_track_idx + 1) % len(playlist)
+                        play_current_track(full_refresh=True)
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")

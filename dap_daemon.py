@@ -1,13 +1,28 @@
 # --- バッテリー情報取得関数 (battery_daemon連携版) ---
-def get_battery_level():
+def get_battery_info():
+    """バッテリーの % と V を取得"""
+    pct_str = "--%"
+    volt_str = ""
     try:
         if os.path.exists("/tmp/battery_status"):
             with open("/tmp/battery_status", "r") as f:
-                return f.read().strip()
-        return "準備中..."
+                raw = f.read().strip()
+                if "/" in raw:
+                    parts = raw.split("/")
+                    v_raw = parts[0].strip()
+                    p_raw = parts[1].strip()
+                    
+                    volt_str = v_raw.upper().rstrip('V').strip()
+                    if volt_str and not volt_str.startswith("-"):
+                        volt_str = volt_str + "V"
+                    else:
+                        volt_str = ""
+                    pct_str = p_raw.strip()
+                else:
+                    pct_str = raw
     except Exception:
-        return "エラー"
-    return f"{v_bat:.2f}V"
+        pass
+    return pct_str, volt_str
 
 import smbus2
 import sys
@@ -28,7 +43,7 @@ import signal
 import contextlib
 import ctypes
 import pygame
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
 
@@ -45,8 +60,13 @@ connected_bt_mac = "25:02:27:B5:81:BE"
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
 if os.path.exists(asoundrc_path):
-    audio_output_mode = "BT"
-    subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+    with open(asoundrc_path, "r") as f:
+        content = f.read()
+    if "bluealsa" in content:
+        audio_output_mode = "BT"
+        subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+    else:
+        audio_output_mode = "PWM"
 else:
     audio_output_mode = "PWM"
 
@@ -93,6 +113,7 @@ def clean_shutdown_display(message="Power Off..."):
 
     try:
         epd.init()
+        
         img = Image.new('1', (epd.height, epd.width), 255)
         draw = ImageDraw.Draw(img)
 
@@ -101,11 +122,13 @@ def clean_shutdown_display(message="Power Off..."):
         draw.text((20, (h // 2) - 10), message, font=font_title, fill=0)
 
         epd.display(epd.getbuffer(img))
-        time.sleep(0.5)
+        time.sleep(1.0)
+        
+        # 画面の焼き付き防止のためクリアしてからスリープ
         epd.Clear()
         epd.sleep()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Shutdown display error: {e}")
 
 def handle_signal(sig, frame):
     clean_shutdown_display("Shutting down...")
@@ -152,7 +175,7 @@ def get_font(size):
 font_title  = get_font(20)
 font_main   = get_font(14)
 font_small  = get_font(12)
-font_clock  = get_font(44)
+font_clock  = get_font(30)
 
 # --- 4. 音楽ライブラリ ---
 MUSIC_DIR = os.path.expanduser("~/music")
@@ -223,9 +246,52 @@ DEBOUNCE_TIME = 0.25
 
 state_lock = threading.Lock()
 
-# イースターエッグ（猫時計）関連変数
+# イースターエッグ & EQ 関連変数
 easter_click_count = 0
 last_easter_click_time = 0.0
+is_clock_unlocked = False  # 時計画面解放フラグ
+is_eq_unlocked = False     # EQ画面解放フラグ
+
+eq_bands = ["BASS", "MID", "TREBLE"]
+eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}  # -6 ～ +6 dB
+eq_cursor = 0  # 0: BASS, 1: MID, 2: TREBLE, 3: FLAT(リセット)
+
+def apply_eq_settings():
+    """EQ設定の音響バックエンド適用関数 (alsaequal / amixer 連携版)"""
+    bass = eq_values["BASS"]      # -6 ~ +6
+    mid = eq_values["MID"]        # -6 ~ +6
+    treble = eq_values["TREBLE"]  # -6 ~ +6
+
+    print(f"[EQ Apply] BASS: {bass}, MID: {mid}, TREBLE: {treble}")
+
+    # -6dB 〜 +6dB を 32% 〜 100% (0dB = 66%) のパーセンテージに変換
+    def db_to_pct(val):
+        pct = int(66 + (val * 5.6))
+        return max(0, min(100, pct))
+
+    bass_pct = f"{db_to_pct(bass)}%"
+    mid_pct = f"{db_to_pct(mid)}%"
+    treble_pct = f"{db_to_pct(treble)}%"
+
+    try:
+        # 低音域 (00 ~ 02)
+        for band in ["00. 31 Hz", "01. 63 Hz", "02. 125 Hz"]:
+            subprocess.run(["amixer", "-D", "equal", "sset", band, bass_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 中音域 (03 ~ 05)
+        for band in ["03. 250 Hz", "04. 500 Hz", "05. 1 kHz"]:
+            subprocess.run(["amixer", "-D", "equal", "sset", band, mid_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 高音域 (06 ~ 09)
+        for band in ["06. 2 kHz", "07. 4 kHz", "08. 8 kHz", "09. 16 kHz"]:
+            subprocess.run(["amixer", "-D", "equal", "sset", band, treble_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    except Exception as e:
+        print(f"EQ Control Error: {e}")
+
+# 艦影ランダム配置用のキャッシュ
+random_ships_cache = None
+last_cat_clock_minute = -1
 
 def truncate_by_width(text, font, max_px):
     def get_text_width(t):
@@ -329,35 +395,152 @@ def is_bt_connected(mac):
     except Exception:
         return False
 
-# --- イースターエッグ用 猫描画関数 ---
-def draw_simple_cat(draw, x, y):
-    """(x, y)の座標に丸くなって寝ている猫を描画"""
-    draw.ellipse([x, y + 5, x + 30, y + 20], fill=0)
-    draw.ellipse([x + 22, y + 2, x + 34, y + 14], fill=0)
-    draw.polygon([(x + 24, y + 3), (x + 27, y - 2), (x + 28, y + 3)], fill=0)
-    draw.polygon([(x + 29, y + 3), (x + 32, y - 2), (x + 33, y + 3)], fill=0)
-    draw.line([(x + 2, y + 15), (x - 4, y + 10), (x - 2, y + 5)], fill=0, width=2)
+# --- ships.png (512x512 統合画像) の読み込み & 透過対応クロップ処理 ---
+def get_cropped_ship(ship_index, target_height):
+    path = "/home/pi/dap/ships.png"
+    if not os.path.exists(path):
+        return None, None
 
-def render_cat_clock(draw, width, height):
-    """Wi-Fi状態に応じた猫時計画面の描画"""
+    try:
+        img = Image.open(path).convert("RGBA")
+        
+        crops = [
+            (30,  15, 480, 90),   # 0段目 (戦艦)
+            (30, 100, 480, 175),  # 1段目 (空母)
+            (30, 185, 480, 260),  # 2段目 (重巡)
+            (30, 270, 480, 345),  # 3段目 (軽巡)
+            (30, 355, 480, 430),  # 4段目 (駆逐)
+            (30, 440, 480, 505)   # 5段目 (潜水艦など)
+        ]
+        
+        if not (0 <= ship_index < len(crops)):
+            ship_index = 0
+
+        crop_box = crops[ship_index]
+        cropped = img.crop(crop_box)
+
+        bbox = cropped.getbbox()
+        if bbox:
+            cropped = cropped.crop(bbox)
+
+        aspect_ratio = cropped.width / float(cropped.height)
+        new_w = int(target_height * aspect_ratio)
+        resized = cropped.resize((new_w, target_height), Image.Resampling.LANCZOS)
+
+        # 進行方向を綺麗に右向き（前進方向）に揃えるための左右反転
+        resized = ImageOps.mirror(resized)
+
+        alpha = resized.getchannel("A")
+        black_shape = Image.eval(alpha, lambda p: 0 if p > 128 else 255).convert("1")
+        mask = alpha.point(lambda p: 255 if p > 128 else 0, mode="1")
+        
+        return black_shape, mask
+    except Exception as e:
+        print(f"Ship crop error ({ship_index}): {e}")
+        return None, None
+
+def render_cat_clock(image, draw, width, height):
+    """艦影シルエット（各艦種のサイズ差を適正化した編成） ＆ 基地ステータス時計画面"""
+    global random_ships_cache, last_cat_clock_minute
+    
     wifi_on, _ = get_rfkill_status()
     current_ssid = get_current_wifi_ssid() if wifi_on else None
 
+    current_min = time.localtime().tm_min
+    if random_ships_cache is None or last_cat_clock_minute != current_min:
+        last_cat_clock_minute = current_min
+        
+        # 艦種インデックス: 0=戦艦(18), 1=空母(18), 2=重巡(14), 3=軽巡(11), 4=駆逐(8)
+        available_presets = [
+            [(0, 18, 5),   (4, 8, 115),   (4, 8, 175)],  # 戦艦 駆逐 駆逐
+            [(0, 18, 10),  (2, 14, 120)],                # 戦艦 重巡
+            [(0, 18, 10),  (1, 18, 120)],                # 戦艦 空母
+            [(1, 18, 5),   (4, 8, 120),   (4, 8, 180)],  # 空母 駆逐 駆逐
+            [(1, 18, 10),  (2, 14, 125)],                # 空母 重巡
+            [(3, 11, 5),   (4, 8, 95),    (4, 8, 155)],  # 軽巡 駆逐 駆逐
+            [(2, 14, 5),   (3, 11, 105),   (4, 8, 170)]   # 重巡 軽巡 駆逐
+        ]        
+        random_ships_cache = random.choice(available_presets)
+
+    # --- 赤エリア（下部全域）：水面 ＆ 1px白いウォーターライン ＆ 艦影 ---
+    sea_level = height - 8
+    draw.rectangle([0, sea_level, width, height], fill=0)
+    draw.line([(0, sea_level - 1), (width, sea_level - 1)], fill=255, width=1)
+
+    has_drawn = False
+    for idx, target_h, pos_x in random_ships_cache:
+        ship_img, mask = get_cropped_ship(idx, target_h)
+        if ship_img and mask:
+            pos_y = (sea_level - 1) - ship_img.height
+            image.paste(ship_img, (pos_x, pos_y), mask)
+            has_drawn = True
+
+    if not has_drawn:
+        draw.polygon([(20, sea_level - 10), (28, sea_level - 2), (90, sea_level - 2), (100, sea_level - 10)], fill=0)
+
+    # --- 緑エリア（右上）：バッテリー情報 ---
+    pct_str, volt_str = get_battery_info()
+    
+    draw.rectangle([width - 75, 2, width - 2, 42], outline=0, fill=255)
+    if volt_str:
+        draw.text((width - 70, 5), volt_str, font=font_small, fill=0)
+    draw.text((width - 70, 22), pct_str, font=font_small, fill=0)
+
+    # --- 青エリア（左上）：枠付き基地情報 / 時計 ---
+    box_x, box_y = 5, 2
+    box_w, box_h = 165, 42
+
+    draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline=0, fill=255)
+
     if wifi_on and current_ssid:
-        # --- Wi-Fi ON: 大きな時計 ＋ 右下に猫1匹 ---
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 12], fill=0)
+        tag_text = truncate_by_width(f"LINK: {current_ssid}", font_small, box_w - 6)
+        draw.text((box_x + 4, box_y + 1), tag_text, font=font_small, fill=255)
+
         cur_time = time.strftime("%H:%M")
-        draw.text((10, 15), cur_time, font=font_clock, fill=0)
-        draw.text((12, 70), truncate_by_width(f"Wi-Fi: {current_ssid}", font_small, 180), font=font_small, fill=0)
-
-        draw_simple_cat(draw, width - 45, height - 25)
-        draw.text((width - 50, height - 42), "Zzz..", font=font_small, fill=0)
+        draw.text((box_x + 12, box_y + 13), cur_time, font=font_clock, fill=0)
     else:
-        # --- Wi-Fi OFF: 下部に猫3匹並んでスヤスヤ ---
-        draw.text((10, 10), "OFFLINE CLOCK", font=font_small, fill=0)
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 14], fill=0)
+        draw.text((box_x + 6, box_y + 1), "[ BASE: KURE ]", font=font_small, fill=255)
+        draw.text((box_x + 8, box_y + 18), "LAT 34°14'N", font=font_main, fill=0)
 
-        for pos_x in [35, 110, 185]:
-            draw_simple_cat(draw, pos_x, height - 25)
-            draw.text((pos_x - 5, height - 42), "Zzz", font=font_small, fill=0)
+def render_eq_screen(image, draw, width, height):
+    """イコライザー設定画面の描画"""
+    draw.text((8, 2), "[ EQUALIZER ]", font=font_main, fill=0)
+    draw.line([(0, 18), (width, 18)], fill=0)
+
+    start_x = 25
+    bar_width = 32
+    spacing = 22
+    base_y = 68  # 0dB 基準ライン
+
+    # 0dB 基準点線/実線
+    draw.line([(10, base_y), (width - 10, base_y)], fill=0)
+    draw.text((2, base_y - 6), "0", font=font_small, fill=0)
+
+    for i, band in enumerate(eq_bands):
+        x = start_x + i * (bar_width + spacing)
+        val = eq_values[band]
+        
+        # ゲインバー描画 (-6 ～ +6dB、1dBにつき 4px)
+        bar_h = val * 4
+        if bar_h != 0:
+            y1 = base_y
+            y2 = base_y - bar_h
+            draw.rectangle([x, min(y1, y2), x + bar_width, max(y1, y2)], fill=0)
+
+        # 選択中アローカーソル
+        if eq_cursor == i:
+            draw.polygon([(x + bar_width//2 - 4, 98), (x + bar_width//2 + 4, 98), (x + bar_width//2, 92)], fill=0)
+
+        val_str = f"{'+' if val > 0 else ''}{val}dB"
+        draw.text((x - 2, 102), band, font=font_small, fill=0)
+        draw.text((x, 22), val_str, font=font_small, fill=0)
+
+    # FLAT (リセット) ボタン
+    reset_x = start_x + 3 * (bar_width + spacing) - 10
+    draw.rectangle([reset_x, 88, reset_x + 42, 108], outline=0, fill=0 if eq_cursor == 3 else 255)
+    draw.text((reset_x + 5, 91), "FLAT", font=font_small, fill=255 if eq_cursor == 3 else 0)
 
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
@@ -407,7 +590,10 @@ def display_worker():
             draw = ImageDraw.Draw(image)
 
             if scr == "CAT_CLOCK":
-                render_cat_clock(draw, epd.height, epd.width)
+                render_cat_clock(image, draw, epd.height, epd.width)
+
+            elif scr == "CAT_EQ":
+                render_eq_screen(image, draw, epd.height, epd.width)
 
             elif scr == "PLAY":
                 state_str = "> PLAY" if playing else "|| PAUSE"
@@ -506,7 +692,7 @@ def display_worker():
 
 threading.Thread(target=display_worker, daemon=True).start()
 
-# --- 猫時計 定期更新スレッド (Wi-Fi ON時 1分周期更新) ---
+# --- 定期更新スレッド (Wi-Fi ON時 1分周期更新) ---
 def cat_clock_timer_thread():
     while True:
         time.sleep(10)
@@ -527,12 +713,20 @@ def connect_bt_device(mac, name="Unknown"):
     request_display_update(is_full_refresh=False)
 
     config_content = f"""pcm.!default {{
-    type bluealsa
-    device "{mac}"
-    profile "a2dp"
+    type plug
+    slave.pcm "equal"
 }}
-ctl.!default {{
-    type bluealsa
+
+pcm.equal {{
+    type equal
+    slave.pcm {{
+        type bluealsa
+        device "{mac}"
+        profile "a2dp"
+    }}
+}}
+ctl.equal {{
+    type equal
 }}
 """
     try:
@@ -567,6 +761,7 @@ ctl.!default {{
             pass
         
         safe_init_audio()
+        apply_eq_settings()
         status_message = "接続成功"
     else:
         status_message = "接続失敗"
@@ -594,14 +789,28 @@ def set_audio_output(mode, mac=None):
             status_message = ""
 
     elif mode == "PWM":
-        if os.path.exists(asoundrc_path):
-            try:
-                os.remove(asoundrc_path)
-            except Exception as e:
-                print(f"asoundrc remove error: {e}")
+        pwm_config = """pcm.!default {
+    type plug
+    slave.pcm "equal"
+}
+
+pcm.equal {
+    type equal
+    slave.pcm "plughw:0,0"
+}
+ctl.equal {
+    type equal
+}
+"""
+        try:
+            with open(asoundrc_path, "w") as f:
+                f.write(pwm_config)
+        except Exception as e:
+            print(f"asoundrc write error: {e}")
 
         audio_output_mode = "PWM"
         safe_init_audio()
+        apply_eq_settings()
         status_message = "PWMモード設定"
         request_display_update(is_full_refresh=True)
         time.sleep(1.0)
@@ -833,14 +1042,20 @@ def update_menu_items(reset_cursor=True):
         scroll_offset = 0
 
     if current_screen == "MENU_TOP":
-        bat_str = get_battery_level()
-        menu_items = [
+        pct, _ = get_battery_info()
+        items = [
             f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
             "アルバム",
             "接続設定",
-            "システム設定",
-            f"バッテリー: {bat_str}"
+            "システム設定"
         ]
+        if is_clock_unlocked:
+            items.append("時計画面")
+        if is_eq_unlocked:
+            items.append("EQ設定")
+        items.append(f"バッテリー: {pct}")
+        menu_items = items
+
     elif current_screen == "MENU_CONN":
         menu_items = [
             "../ (戻る)",
@@ -948,7 +1163,7 @@ def exit_cat_clock_if_needed():
     return False
 
 def check_easter_egg_trigger():
-    global easter_click_count, last_easter_click_time, current_screen
+    global easter_click_count, last_easter_click_time, current_screen, is_clock_unlocked, is_eq_unlocked
     now = time.time()
     if now - last_easter_click_time > 3.0:
         easter_click_count = 0
@@ -958,6 +1173,8 @@ def check_easter_egg_trigger():
 
     if easter_click_count >= 5:
         easter_click_count = 0
+        is_clock_unlocked = True
+        is_eq_unlocked = True  # EQ機能も同時解禁
         current_screen = "CAT_CLOCK"
         request_display_update(is_full_refresh=True)
         return True
@@ -970,10 +1187,23 @@ def parse_clean_name(selected_str, prefix):
 
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
-    if exit_cat_clock_if_needed(): return
-    global current_screen, selected_album, current_track_idx, playlist, status_message
+    global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
     with state_lock:
         reset_inactivity_timer()
+
+        # EQ画面での決定操作（変更適用 ＆ FLAT処理 ＆ メニュー画面へ戻る）
+        if current_screen == "CAT_EQ":
+            if eq_cursor == 3:  # FLATリセット
+                eq_values["BASS"] = 0
+                eq_values["MID"] = 0
+                eq_values["TREBLE"] = 0
+            apply_eq_settings()
+            current_screen = "MENU_TOP"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+            return
+
+        if exit_cat_clock_if_needed(): return
 
         if current_screen == "PLAY":
             current_screen = "MENU_TOP"
@@ -1009,6 +1239,13 @@ def on_btn_menu_or_select():
                     elif selected == "システム設定":
                         current_screen = "MENU_SYS"
                         update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
+                    elif selected == "時計画面":
+                        current_screen = "CAT_CLOCK"
+                        request_display_update(is_full_refresh=True)
+                    elif selected == "EQ設定":
+                        current_screen = "CAT_EQ"
+                        eq_cursor = 0
                         request_display_update(is_full_refresh=True)
                     elif selected.startswith("バッテリー:"):
                         update_menu_items(reset_cursor=False)
@@ -1116,10 +1353,23 @@ def on_btn_menu_or_select():
 
 def on_btn_play_or_back():
     if not debounce("btn_play_back"): return
-    if exit_cat_clock_if_needed(): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
     with state_lock:
         reset_inactivity_timer()
+        
+        # EQ画面からの復帰処理（設定確定 ＆ 再生状態を変えずに PLAY 画面へ戻る）
+        if current_screen == "CAT_EQ":
+            if eq_cursor == 3:  # FLATリセット
+                eq_values["BASS"] = 0
+                eq_values["MID"] = 0
+                eq_values["TREBLE"] = 0
+            apply_eq_settings()
+            current_screen = "PLAY"
+            request_display_update(is_full_refresh=True)
+            return
+
+        if exit_cat_clock_if_needed(): return
+
         if current_screen == "PLAY":
             if is_playing:
                 pause_start_time = time.time()
@@ -1148,7 +1398,12 @@ def on_btn_up_action():
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
-        if current_screen == "PLAY":
+        if current_screen == "CAT_EQ":
+            if eq_cursor < 3:
+                band = eq_bands[eq_cursor]
+                eq_values[band] = min(6, eq_values[band] + 1)
+                request_display_update(is_full_refresh=False)
+        elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
             if pygame.mixer.get_init(): pygame.mixer.music.set_volume(volume)
             request_display_update(is_full_refresh=False)
@@ -1164,7 +1419,12 @@ def on_btn_down_action():
     global volume, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
-        if current_screen == "PLAY":
+        if current_screen == "CAT_EQ":
+            if eq_cursor < 3:
+                band = eq_bands[eq_cursor]
+                eq_values[band] = max(-6, eq_values[band] - 1)
+                request_display_update(is_full_refresh=False)
+        elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
             if pygame.mixer.get_init(): pygame.mixer.music.set_volume(volume)
             request_display_update(is_full_refresh=False)
@@ -1177,10 +1437,13 @@ def on_btn_down_action():
 def on_btn_prev():
     if not debounce("btn_prev"): return
     if exit_cat_clock_if_needed(): return
-    global current_track_idx
+    global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
-        if playlist:
+        if current_screen == "CAT_EQ":
+            eq_cursor = (eq_cursor - 1) % 4
+            request_display_update(is_full_refresh=False)
+        elif playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
             else:
@@ -1190,10 +1453,13 @@ def on_btn_prev():
 def on_btn_next():
     if not debounce("btn_next"): return
     if exit_cat_clock_if_needed(): return
-    global current_track_idx
+    global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
-        if playlist:
+        if current_screen == "CAT_EQ":
+            eq_cursor = (eq_cursor + 1) % 4
+            request_display_update(is_full_refresh=False)
+        elif playlist:
             current_track_idx = (current_track_idx + 1) % len(playlist)
             play_current_track(full_refresh=True)
 
@@ -1233,7 +1499,7 @@ try:
                     last_drawn_segment = current_segment
                     request_display_update(is_full_refresh=False)
 
-            if current_screen not in ["PLAY", "CAT_CLOCK"] and (now - last_user_action_time > 10):
+            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ"] and (now - last_user_action_time > 10):
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
