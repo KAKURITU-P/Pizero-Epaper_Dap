@@ -8,7 +8,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ## 主な特徴
 
-- **電子ペーパー表示（Waveshare 2.13inch V4）**[Amazon販売ページ](https://amzn.asia/d/094VnMhz)
+- **電子ペーパー表示（Waveshare 2.13inch V4）**
   - **PLAY 画面:** 曲名、アーティスト名、音量（%）、再生/一時停止状態、再生時間を表示
   - **プログレスバー:** 8 段階の部分更新（Partial Refresh）によるスムーズなプログレス表示
   - **残像対策:** メニュー操作や画面切り替え時は全画面リフレッシュ（Full Refresh）を実行
@@ -191,3 +191,5 @@ python3 dap_daemon.py
 
 ### メニュー画面（接続設定）
 <img width="1156" height="867" alt="Image" src="https://github.com/user-attachments/assets/98ddfefd-175f-4e34-a417-001f32475309" />
+
+## このソフトウェアは[MITライセンス](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/tree/main?tab=MIT-1-ov-file)でライセンスされています
