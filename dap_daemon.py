@@ -687,7 +687,7 @@ def display_worker():
                     song_filename = os.path.splitext(os.path.basename(full_path))[0]
                     artist_label = get_track_artist_info(full_path)
                     if full_path in favorites_list:
-                        song_filename = "[★] " + song_filename
+                        song_filename = " " + song_filename
                 else:
                     song_filename = "曲ファイルがありません"
                     artist_label = "不明なアーティスト"
