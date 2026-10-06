@@ -1,4 +1,28 @@
-# --- バッテリー情報取得関数 (battery_daemon連携版) ---
+import smbus2
+import sys
+import os
+import time
+import glob
+import re
+import socket
+import random
+import subprocess
+import threading
+import queue
+import wave
+import signal
+import contextlib
+import ctypes
+import json
+import pygame
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+import waveshare_epd.epd2in13_V4 as epd2in13
+from gpiozero import Button
+
+sys.path.append("/home/pi/dap")
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# --- バッテリー情報取得関数 ---
 def get_battery_info():
     """バッテリーの % と V を取得"""
     pct_str = "--%"
@@ -23,29 +47,6 @@ def get_battery_info():
     except Exception:
         pass
     return pct_str, volt_str
-
-import smbus2
-import sys
-import os
-sys.path.append("/home/pi/dap")
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import time
-import glob
-import re
-import socket
-import random
-import subprocess
-import threading
-import queue
-import wave
-import signal
-import contextlib
-import ctypes
-import pygame
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-import waveshare_epd.epd2in13_V4 as epd2in13
-from gpiozero import Button
 
 # --- mutagen によるメタデータ取得 ---
 try:
@@ -79,7 +80,7 @@ except Exception:
 # --- 1. Pygame オーディオ初期化 ---
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
 
-volume = 0.7
+volume = 0.1
 
 def safe_init_audio():
     try:
@@ -106,6 +107,7 @@ safe_init_audio()
 epd = epd2in13.EPD()
 
 def clean_shutdown_display(message="Power Off..."):
+    save_resume_state()
     try:
         pygame.mixer.music.stop()
     except Exception:
@@ -124,7 +126,6 @@ def clean_shutdown_display(message="Power Off..."):
         epd.display(epd.getbuffer(img))
         time.sleep(1.0)
         
-        # 画面の焼き付き防止のためクリアしてからスリープ
         epd.Clear()
         epd.sleep()
     except Exception as e:
@@ -177,16 +178,102 @@ font_main   = get_font(14)
 font_small  = get_font(12)
 font_clock  = get_font(30)
 
-# --- 4. 音楽ライブラリ ---
+# --- 4. 音楽ライブラリ & お気に入り & レジューム ---
 MUSIC_DIR = os.path.expanduser("~/music")
+DATA_DIR = "/home/pi/dap"
+FAV_FILE = os.path.join(DATA_DIR, "favorites.json")
+RESUME_FILE = os.path.join(DATA_DIR, "resume.json")
+
 if not os.path.exists(MUSIC_DIR):
     os.makedirs(MUSIC_DIR, exist_ok=True)
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR, exist_ok=True)
 
 playlist_original = []
 playlist = []
 albums_dict = {}
 selected_album = None
 current_track_idx = 0
+favorites_list = []
+
+# リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
+repeat_mode = 0
+
+# スリープタイマー (分)
+sleep_timer_minutes = 0
+sleep_timer_end_time = 0.0
+
+def load_favorites():
+    global favorites_list
+    if os.path.exists(FAV_FILE):
+        try:
+            with open(FAV_FILE, "r", encoding="utf-8") as f:
+                favorites_list = json.load(f)
+        except Exception:
+            favorites_list = []
+
+def save_favorites():
+    try:
+        with open(FAV_FILE, "w", encoding="utf-8") as f:
+            json.dump(favorites_list, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Fav save error: {e}")
+
+# --- お気に入り追加・削除のヘルパー関数 ---
+def toggle_favorite_by_path(filepath):
+    """指定されたファイルパスをお気に入りに追加/削除する"""
+    global favorites_list
+    if filepath in favorites_list:
+        favorites_list.remove(filepath)
+        is_fav = False
+    else:
+        favorites_list.append(filepath)
+        is_fav = True
+    save_favorites()
+    return is_fav
+
+def show_fav_toast(is_fav):
+    """お気に入り変更時の通知メッセージ表示"""
+    global status_message
+    status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
+    request_display_update(is_full_refresh=False)
+    
+    def _clear():
+        time.sleep(1.5)
+        global status_message
+        status_message = ""
+        request_display_update(is_full_refresh=False)
+    threading.Thread(target=_clear, daemon=True).start()
+
+def toggle_favorite_current_track():
+    if not playlist or current_track_idx >= len(playlist):
+        return False
+    return toggle_favorite_by_path(playlist[current_track_idx])
+
+def save_resume_state():
+    if not playlist or current_track_idx >= len(playlist):
+        return
+    try:
+        data = {
+            "filepath": playlist[current_track_idx],
+            "track_idx": current_track_idx
+        }
+        with open(RESUME_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Resume save error: {e}")
+
+def load_resume_state():
+    global current_track_idx
+    if os.path.exists(RESUME_FILE):
+        try:
+            with open(RESUME_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                filepath = data.get("filepath")
+                if filepath and filepath in playlist:
+                    current_track_idx = playlist.index(filepath)
+        except Exception:
+            pass
 
 def reload_music_library():
     global playlist_original, playlist, albums_dict, current_track_idx
@@ -208,7 +295,9 @@ def reload_music_library():
             albums_dict[album_name] = []
         albums_dict[album_name].append(filepath)
 
+load_favorites()
 reload_music_library()
+load_resume_state()
 
 is_playing = False
 is_shuffle = False
@@ -249,22 +338,20 @@ state_lock = threading.Lock()
 # イースターエッグ & EQ 関連変数
 easter_click_count = 0
 last_easter_click_time = 0.0
-is_clock_unlocked = False  # 時計画面解放フラグ
-is_eq_unlocked = False     # EQ画面解放フラグ
+is_clock_unlocked = False
+is_eq_unlocked = False
 
 eq_bands = ["BASS", "MID", "TREBLE"]
-eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}  # -6 ～ +6 dB
-eq_cursor = 0  # 0: BASS, 1: MID, 2: TREBLE, 3: FLAT(リセット)
+eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}
+eq_cursor = 0
 
 def apply_eq_settings():
-    """EQ設定の音響バックエンド適用関数 (alsaequal / amixer 連携版)"""
-    bass = eq_values["BASS"]      # -6 ~ +6
-    mid = eq_values["MID"]        # -6 ~ +6
-    treble = eq_values["TREBLE"]  # -6 ~ +6
+    bass = eq_values["BASS"]
+    mid = eq_values["MID"]
+    treble = eq_values["TREBLE"]
 
     print(f"[EQ Apply] BASS: {bass}, MID: {mid}, TREBLE: {treble}")
 
-    # -6dB 〜 +6dB を 32% 〜 100% (0dB = 66%) のパーセンテージに変換
     def db_to_pct(val):
         pct = int(66 + (val * 5.6))
         return max(0, min(100, pct))
@@ -274,22 +361,18 @@ def apply_eq_settings():
     treble_pct = f"{db_to_pct(treble)}%"
 
     try:
-        # 低音域 (00 ~ 02)
         for band in ["00. 31 Hz", "01. 63 Hz", "02. 125 Hz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, bass_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 中音域 (03 ~ 05)
         for band in ["03. 250 Hz", "04. 500 Hz", "05. 1 kHz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, mid_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 高音域 (06 ~ 09)
         for band in ["06. 2 kHz", "07. 4 kHz", "08. 8 kHz", "09. 16 kHz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, treble_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     except Exception as e:
         print(f"EQ Control Error: {e}")
 
-# 艦影ランダム配置用のキャッシュ
 random_ships_cache = None
 last_cat_clock_minute = -1
 
@@ -395,7 +478,6 @@ def is_bt_connected(mac):
     except Exception:
         return False
 
-# --- ships.png (512x512 統合画像) の読み込み & 透過対応クロップ処理 ---
 def get_cropped_ship(ship_index, target_height):
     path = "/home/pi/dap/ships.png"
     if not os.path.exists(path):
@@ -403,16 +485,14 @@ def get_cropped_ship(ship_index, target_height):
 
     try:
         img = Image.open(path).convert("RGBA")
-        
         crops = [
-            (30,  15, 480, 90),   # 0段目 (戦艦)
-            (30, 100, 480, 175),  # 1段目 (空母)
-            (30, 185, 480, 260),  # 2段目 (重巡)
-            (30, 270, 480, 345),  # 3段目 (軽巡)
-            (30, 355, 480, 430),  # 4段目 (駆逐)
-            (30, 440, 480, 505)   # 5段目 (潜水艦など)
+            (30,  15, 480, 90),
+            (30, 100, 480, 175),
+            (30, 185, 480, 260),
+            (30, 270, 480, 345),
+            (30, 355, 480, 430),
+            (30, 440, 480, 505)
         ]
-        
         if not (0 <= ship_index < len(crops)):
             ship_index = 0
 
@@ -426,8 +506,6 @@ def get_cropped_ship(ship_index, target_height):
         aspect_ratio = cropped.width / float(cropped.height)
         new_w = int(target_height * aspect_ratio)
         resized = cropped.resize((new_w, target_height), Image.Resampling.LANCZOS)
-
-        # 進行方向を綺麗に右向き（前進方向）に揃えるための左右反転
         resized = ImageOps.mirror(resized)
 
         alpha = resized.getchannel("A")
@@ -440,7 +518,6 @@ def get_cropped_ship(ship_index, target_height):
         return None, None
 
 def render_cat_clock(image, draw, width, height):
-    """艦影シルエット（各艦種のサイズ差を適正化した編成） ＆ 基地ステータス時計画面"""
     global random_ships_cache, last_cat_clock_minute
     
     wifi_on, _ = get_rfkill_status()
@@ -449,20 +526,17 @@ def render_cat_clock(image, draw, width, height):
     current_min = time.localtime().tm_min
     if random_ships_cache is None or last_cat_clock_minute != current_min:
         last_cat_clock_minute = current_min
-        
-        # 艦種インデックス: 0=戦艦(18), 1=空母(18), 2=重巡(14), 3=軽巡(11), 4=駆逐(8)
         available_presets = [
-            [(0, 18, 5),   (4, 8, 115),   (4, 8, 175)],  # 戦艦 駆逐 駆逐
-            [(0, 18, 10),  (2, 14, 120)],                # 戦艦 重巡
-            [(0, 18, 10),  (1, 18, 120)],                # 戦艦 空母
-            [(1, 18, 5),   (4, 8, 120),   (4, 8, 180)],  # 空母 駆逐 駆逐
-            [(1, 18, 10),  (2, 14, 125)],                # 空母 重巡
-            [(3, 11, 5),   (4, 8, 95),    (4, 8, 155)],  # 軽巡 駆逐 駆逐
-            [(2, 14, 5),   (3, 11, 105),   (4, 8, 170)]   # 重巡 軽巡 駆逐
+            [(0, 18, 5),   (4, 8, 115),   (4, 8, 175)],
+            [(0, 18, 10),  (2, 14, 120)],
+            [(0, 18, 10),  (1, 18, 120)],
+            [(1, 18, 5),   (4, 8, 120),   (4, 8, 180)],
+            [(1, 18, 10),  (2, 14, 125)],
+            [(3, 11, 5),   (4, 8, 95),    (4, 8, 155)],
+            [(2, 14, 5),   (3, 11, 105),   (4, 8, 170)]
         ]        
         random_ships_cache = random.choice(available_presets)
 
-    # --- 赤エリア（下部全域）：水面 ＆ 1px白いウォーターライン ＆ 艦影 ---
     sea_level = height - 8
     draw.rectangle([0, sea_level, width, height], fill=0)
     draw.line([(0, sea_level - 1), (width, sea_level - 1)], fill=255, width=1)
@@ -472,13 +546,12 @@ def render_cat_clock(image, draw, width, height):
         ship_img, mask = get_cropped_ship(idx, target_h)
         if ship_img and mask:
             pos_y = (sea_level - 1) - ship_img.height
-            image.paste(ship_img, (pos_x, pos_y), mask)
+            image.paste(ship_img, (pos_y, pos_y), mask)
             has_drawn = True
 
     if not has_drawn:
         draw.polygon([(20, sea_level - 10), (28, sea_level - 2), (90, sea_level - 2), (100, sea_level - 10)], fill=0)
 
-    # --- 緑エリア（右上）：バッテリー情報 ---
     pct_str, volt_str = get_battery_info()
     
     draw.rectangle([width - 75, 2, width - 2, 42], outline=0, fill=255)
@@ -486,7 +559,6 @@ def render_cat_clock(image, draw, width, height):
         draw.text((width - 70, 5), volt_str, font=font_small, fill=0)
     draw.text((width - 70, 22), pct_str, font=font_small, fill=0)
 
-    # --- 青エリア（左上）：枠付き基地情報 / 時計 ---
     box_x, box_y = 5, 2
     box_w, box_h = 165, 42
 
@@ -505,16 +577,14 @@ def render_cat_clock(image, draw, width, height):
         draw.text((box_x + 8, box_y + 18), "LAT 34°14'N", font=font_main, fill=0)
 
 def render_eq_screen(image, draw, width, height):
-    """イコライザー設定画面の描画"""
     draw.text((8, 2), "[ EQUALIZER ]", font=font_main, fill=0)
     draw.line([(0, 18), (width, 18)], fill=0)
 
     start_x = 25
     bar_width = 32
     spacing = 22
-    base_y = 68  # 0dB 基準ライン
+    base_y = 68
 
-    # 0dB 基準点線/実線
     draw.line([(10, base_y), (width - 10, base_y)], fill=0)
     draw.text((2, base_y - 6), "0", font=font_small, fill=0)
 
@@ -522,14 +592,12 @@ def render_eq_screen(image, draw, width, height):
         x = start_x + i * (bar_width + spacing)
         val = eq_values[band]
         
-        # ゲインバー描画 (-6 ～ +6dB、1dBにつき 4px)
         bar_h = val * 4
         if bar_h != 0:
             y1 = base_y
             y2 = base_y - bar_h
             draw.rectangle([x, min(y1, y2), x + bar_width, max(y1, y2)], fill=0)
 
-        # 選択中アローカーソル
         if eq_cursor == i:
             draw.polygon([(x + bar_width//2 - 4, 98), (x + bar_width//2 + 4, 98), (x + bar_width//2, 92)], fill=0)
 
@@ -537,7 +605,6 @@ def render_eq_screen(image, draw, width, height):
         draw.text((x - 2, 102), band, font=font_small, fill=0)
         draw.text((x, 22), val_str, font=font_small, fill=0)
 
-    # FLAT (リセット) ボタン
     reset_x = start_x + 3 * (bar_width + spacing) - 10
     draw.rectangle([reset_x, 88, reset_x + 42, 108], outline=0, fill=0 if eq_cursor == 3 else 255)
     draw.text((reset_x + 5, 91), "FLAT", font=font_small, fill=255 if eq_cursor == 3 else 0)
@@ -596,10 +663,22 @@ def display_worker():
                 render_eq_screen(image, draw, epd.height, epd.width)
 
             elif scr == "PLAY":
-                state_str = "> PLAY" if playing else "|| PAUSE"
+                # モード表示生成 ([1] / [ALL] / [SHUF] 等)
+                mode_str = ""
+                if repeat_mode == 1: mode_str += " [1]"
+                elif repeat_mode == 2: mode_str += " [ALL]"
+                if is_shuffle: mode_str += " [SHUF]"
+
+                # スリープタイマー表示生成
+                timer_str = ""
+                if sleep_timer_end_time > 0:
+                    rem_sec = max(0, int(sleep_timer_end_time - time.time()))
+                    timer_str = f" T:{rem_sec // 60}m"
+
+                state_str = ("> PLAY" if playing else "|| PAUSE") + mode_str + timer_str
                 vol_str = f"VOL: {int(cur_vol * 100)}%"
 
-                draw.text((8, 2), state_str, font=font_main, fill=0)
+                draw.text((8, 2), truncate_by_width(state_str, font_main, 160), font=font_main, fill=0)
                 draw.text((170, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
@@ -607,6 +686,8 @@ def display_worker():
                     full_path = pl[track_idx]
                     song_filename = os.path.splitext(os.path.basename(full_path))[0]
                     artist_label = get_track_artist_info(full_path)
+                    if full_path in favorites_list:
+                        song_filename = "[★] " + song_filename
                 else:
                     song_filename = "曲ファイルがありません"
                     artist_label = "不明なアーティスト"
@@ -639,12 +720,15 @@ def display_worker():
                 header_text = "メニュー"
                 if scr == "MENU_SYS": header_text = "メニュー > システム設定"
                 elif scr == "MENU_ALBUMS": header_text = "メニュー > アルバム"
+                elif scr == "MENU_FAVS": header_text = "アルバム > お気に入り"
                 elif scr == "MENU_TRACKS": header_text = truncate_by_width(f"アルバム > {sel_alb}", font_main, 230) if sel_alb else "アルバム"
+                elif scr == "MENU_PLAY_SETTINGS": header_text = "メニュー > 再生設定"
                 elif scr == "MENU_BT": header_text = "接続設定 > Bluetooth"
                 elif scr == "MENU_BT_PAIRED": header_text = "Bluetooth > 登録済み"
                 elif scr == "MENU_BT_SCAN": header_text = "Bluetooth > 新規検索"
                 elif scr == "MENU_WIFI": header_text = "接続設定 > Wi-Fi"
                 elif scr == "MENU_CONN": header_text = "メニュー > 接続設定"
+                elif scr == "MENU_SLEEP": header_text = "再生設定 > スリープタイマー"
 
                 draw.text((8, 2), header_text, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
@@ -692,7 +776,7 @@ def display_worker():
 
 threading.Thread(target=display_worker, daemon=True).start()
 
-# --- 定期更新スレッド (Wi-Fi ON時 1分周期更新) ---
+# --- 定期更新スレッド ---
 def cat_clock_timer_thread():
     while True:
         time.sleep(10)
@@ -1043,18 +1127,40 @@ def update_menu_items(reset_cursor=True):
 
     if current_screen == "MENU_TOP":
         pct, _ = get_battery_info()
-        items = [
-            f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
-            "アルバム",
-            "接続設定",
-            "システム設定"
-        ]
+        items = ["アルバム"]
         if is_clock_unlocked:
             items.append("時計画面")
+        items.extend([
+            "再生設定",
+            "接続設定",
+            "システム設定",
+            f"バッテリー: {pct}"
+        ])
+        menu_items = items
+
+    elif current_screen == "MENU_PLAY_SETTINGS":
+        rep_labels = ["OFF", "ONE", "ALL"]
+        items = [
+            "../ (戻る)",
+            f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
+            f"リピート: {rep_labels[repeat_mode]}",
+            "スリープタイマー"
+        ]
         if is_eq_unlocked:
             items.append("EQ設定")
-        items.append(f"バッテリー: {pct}")
         menu_items = items
+
+    elif current_screen == "MENU_SLEEP":
+        menu_items = [
+            "../ (戻る)",
+            f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}",
+            f"15分 {'<--' if sleep_timer_minutes == 15 else ''}",
+            f"30分 {'<--' if sleep_timer_minutes == 30 else ''}",
+            f"60分 {'<--' if sleep_timer_minutes == 60 else ''}"
+        ]
+
+    elif current_screen == "MENU_FAVS":
+        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
 
     elif current_screen == "MENU_CONN":
         menu_items = [
@@ -1116,7 +1222,8 @@ def update_menu_items(reset_cursor=True):
         ]
     elif current_screen == "MENU_ALBUMS":
         album_list = sorted(list(albums_dict.keys()))
-        menu_items = ["../ (戻る)"] + [f"[{alb}]" for alb in album_list]
+        menu_items = ["../ (戻る)", "[★ お気に入り]"] + [f"[{alb}]" for alb in album_list]
+
     elif current_screen == "MENU_TRACKS":
         track_paths = albums_dict.get(selected_album, [])
         menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in track_paths]
@@ -1141,6 +1248,7 @@ def play_current_track(full_refresh=False):
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             is_playing = True
+            save_resume_state()
         except Exception as e:
             print(f"Play error: {e}")
 
@@ -1153,6 +1261,18 @@ def toggle_shuffle():
     playlist = random.sample(playlist_original, len(playlist_original)) if is_shuffle else list(playlist_original)
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
+
+def toggle_repeat():
+    global repeat_mode
+    repeat_mode = (repeat_mode + 1) % 3
+
+def set_sleep_timer(mins):
+    global sleep_timer_minutes, sleep_timer_end_time
+    sleep_timer_minutes = mins
+    if mins > 0:
+        sleep_timer_end_time = time.time() + (mins * 60)
+    else:
+        sleep_timer_end_time = 0.0
 
 def exit_cat_clock_if_needed():
     global current_screen
@@ -1174,7 +1294,7 @@ def check_easter_egg_trigger():
     if easter_click_count >= 5:
         easter_click_count = 0
         is_clock_unlocked = True
-        is_eq_unlocked = True  # EQ機能も同時解禁
+        is_eq_unlocked = True
         current_screen = "CAT_CLOCK"
         request_display_update(is_full_refresh=True)
         return True
@@ -1191,14 +1311,13 @@ def on_btn_menu_or_select():
     with state_lock:
         reset_inactivity_timer()
 
-        # EQ画面での決定操作（変更適用 ＆ FLAT処理 ＆ メニュー画面へ戻る）
         if current_screen == "CAT_EQ":
-            if eq_cursor == 3:  # FLATリセット
+            if eq_cursor == 3:
                 eq_values["BASS"] = 0
                 eq_values["MID"] = 0
                 eq_values["TREBLE"] = 0
             apply_eq_settings()
-            current_screen = "MENU_TOP"
+            current_screen = "MENU_PLAY_SETTINGS"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
             return
@@ -1214,22 +1333,26 @@ def on_btn_menu_or_select():
                 selected = menu_items[cursor_idx]
 
                 if selected.startswith("../"):
-                    if current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS"]: current_screen = "MENU_TOP"
+                    if current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]: current_screen = "MENU_TOP"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
-                    elif current_screen == "MENU_TRACKS": current_screen = "MENU_ALBUMS"
+                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS"]: current_screen = "MENU_ALBUMS"
+                    elif current_screen == "MENU_SLEEP": current_screen = "MENU_PLAY_SETTINGS"
                     else: current_screen = "MENU_TOP"
                     update_menu_items(reset_cursor=True)
                     request_display_update(is_full_refresh=True)
                     return
 
                 if current_screen == "MENU_TOP":
-                    if selected.startswith("シャッフル:"):
-                        toggle_shuffle()
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-                    elif selected == "アルバム":
+                    if selected == "アルバム":
                         current_screen = "MENU_ALBUMS"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
+                    elif selected == "時計画面":
+                        current_screen = "CAT_CLOCK"
+                        request_display_update(is_full_refresh=True)
+                    elif selected == "再生設定":
+                        current_screen = "MENU_PLAY_SETTINGS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "接続設定":
@@ -1240,16 +1363,43 @@ def on_btn_menu_or_select():
                         current_screen = "MENU_SYS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
-                    elif selected == "時計画面":
-                        current_screen = "CAT_CLOCK"
+                    elif selected.startswith("バッテリー:"):
+                        update_menu_items(reset_cursor=False)
+                        request_display_update(is_full_refresh=False)
+
+                elif current_screen == "MENU_PLAY_SETTINGS":
+                    if selected.startswith("シャッフル:"):
+                        toggle_shuffle()
+                        update_menu_items(reset_cursor=False)
+                        request_display_update(is_full_refresh=False)
+                    elif selected.startswith("リピート:"):
+                        toggle_repeat()
+                        update_menu_items(reset_cursor=False)
+                        request_display_update(is_full_refresh=False)
+                    elif selected == "スリープタイマー":
+                        current_screen = "MENU_SLEEP"
+                        update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "EQ設定":
                         current_screen = "CAT_EQ"
                         eq_cursor = 0
                         request_display_update(is_full_refresh=True)
-                    elif selected.startswith("バッテリー:"):
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
+
+                elif current_screen == "MENU_SLEEP":
+                    if selected.startswith("タイマーOFF"): set_sleep_timer(0)
+                    elif selected.startswith("15分"): set_sleep_timer(15)
+                    elif selected.startswith("30分"): set_sleep_timer(30)
+                    elif selected.startswith("60分"): set_sleep_timer(60)
+                    update_menu_items(reset_cursor=False)
+                    request_display_update(is_full_refresh=False)
+
+                elif current_screen == "MENU_FAVS":
+                    chosen_idx = cursor_idx - 1
+                    if 0 <= chosen_idx < len(favorites_list):
+                        playlist = favorites_list
+                        current_track_idx = chosen_idx
+                        play_current_track(full_refresh=True)
+                        current_screen = "PLAY"
 
                 elif current_screen == "MENU_CONN":
                     if selected == "Wi-Fi設定":
@@ -1310,13 +1460,18 @@ def on_btn_menu_or_select():
                                 break
 
                 elif current_screen == "MENU_ALBUMS":
-                    album_list = sorted(list(albums_dict.keys()))
-                    chosen_idx = cursor_idx - 1
-                    if 0 <= chosen_idx < len(album_list):
-                        selected_album = album_list[chosen_idx]
-                        current_screen = "MENU_TRACKS"
+                    if selected == "[★ お気に入り]":
+                        current_screen = "MENU_FAVS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
+                    else:
+                        album_list = sorted(list(albums_dict.keys()))
+                        chosen_idx = cursor_idx - 2  # 0番目: "../", 1番目: "[★ お気に入り]"
+                        if 0 <= chosen_idx < len(album_list):
+                            selected_album = album_list[chosen_idx]
+                            current_screen = "MENU_TRACKS"
+                            update_menu_items(reset_cursor=True)
+                            request_display_update(is_full_refresh=True)
 
                 elif current_screen == "MENU_TRACKS":
                     track_paths = albums_dict.get(selected_album, [])
@@ -1357,9 +1512,8 @@ def on_btn_play_or_back():
     with state_lock:
         reset_inactivity_timer()
         
-        # EQ画面からの復帰処理（設定確定 ＆ 再生状態を変えずに PLAY 画面へ戻る）
         if current_screen == "CAT_EQ":
-            if eq_cursor == 3:  # FLATリセット
+            if eq_cursor == 3:
                 eq_values["BASS"] = 0
                 eq_values["MID"] = 0
                 eq_values["TREBLE"] = 0
@@ -1440,9 +1594,22 @@ def on_btn_prev():
     global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
+        
+        # 1. EQ画面の場合
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
+
+        # 2. アルバムの曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
+        elif current_screen == "MENU_TRACKS":
+            track_paths = albums_dict.get(selected_album, [])
+            chosen_idx = cursor_idx - 1  # 0番目は "../ (戻る)"
+            if 0 <= chosen_idx < len(track_paths):
+                target_path = track_paths[chosen_idx]
+                is_fav = toggle_favorite_by_path(target_path)
+                show_fav_toast(is_fav)
+
+        # 3. 通常再生時などの曲戻し動作
         elif playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
@@ -1450,10 +1617,20 @@ def on_btn_prev():
                 current_track_idx = (current_track_idx - 1) % len(playlist)
                 play_current_track(full_refresh=True)
 
-def on_btn_next():
-    if not debounce("btn_next"): return
-    if exit_cat_clock_if_needed(): return
+def handle_next_btn_press():
+    """NEXTボタンの長押し検知 (PLAY画面での Fav トグル) ＆ 通常押し (曲送り)"""
     global current_track_idx, eq_cursor
+    
+    start_t = time.time()
+    while btn_next.is_pressed:
+        time.sleep(0.05)
+        if current_screen == "PLAY" and (time.time() - start_t) >= 1.2:
+            with state_lock:
+                is_fav = toggle_favorite_current_track()
+                show_fav_toast(is_fav)
+            return
+
+    # 通常押し（短押し）処理
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -1462,6 +1639,11 @@ def on_btn_next():
         elif playlist:
             current_track_idx = (current_track_idx + 1) % len(playlist)
             play_current_track(full_refresh=True)
+
+def on_btn_next():
+    if not debounce("btn_next"): return
+    if exit_cat_clock_if_needed(): return
+    threading.Thread(target=handle_next_btn_press, daemon=True).start()
 
 # --- 10. GPIO割り当て ---
 BOUNCE_SEC = 0.1
@@ -1482,11 +1664,25 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
+    # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
+    if playlist:
+        filepath = playlist[current_track_idx]
+        total_duration_sec = get_track_duration_sec(filepath)
+        try:
+            pygame.mixer.music.load(filepath)
+        except Exception as e:
+            print(f"Resume load error: {e}")
+
     request_display_update(is_full_refresh=True)
 
     while True:
         time.sleep(0.2)
         now = time.time()
+
+        # スリープタイマー監視
+        if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
+            clean_shutdown_display("Sleep Timer Off...")
+            subprocess.run(["sudo", "shutdown", "-h", "now"])
 
         with state_lock:
             cur_sec = get_current_sec()
@@ -1503,13 +1699,24 @@ try:
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
+            # 曲終了時の自動遷移 ＆ リピート処理
             if is_playing:
                 music_busy = pygame.mixer.music.get_busy()
                 
                 if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
                     if playlist:
-                        current_track_idx = (current_track_idx + 1) % len(playlist)
-                        play_current_track(full_refresh=True)
+                        if repeat_mode == 1:  # 1曲リピート
+                            play_current_track(full_refresh=True)
+                        elif repeat_mode == 2:  # 全曲リピート
+                            current_track_idx = (current_track_idx + 1) % len(playlist)
+                            play_current_track(full_refresh=True)
+                        else:  # リピートOFF
+                            if current_track_idx < len(playlist) - 1:
+                                current_track_idx += 1
+                                play_current_track(full_refresh=True)
+                            else:
+                                is_playing = False
+                                request_display_update(is_full_refresh=False)
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
