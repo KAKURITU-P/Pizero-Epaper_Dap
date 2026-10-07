@@ -115,6 +115,7 @@ sudo systemctl start dap.service
 ```
 
 ---
+# 修正／更新は[最新のリリース](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/)を確認してください
 
 ## ライセンス
 
