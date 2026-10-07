@@ -118,5 +118,5 @@ sudo systemctl start dap.service
 
 ## ライセンス
 
-本プロジェクトのソースコードは [MIT License](https://www.google.com/search?q=LICENSE&utm_source=gemini) のもとで公開されています。
+本プロジェクトのソースコードは [MIT License](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/blob/main/LICENSE.md) のもとで公開されています。
 
