@@ -5,6 +5,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 電子ペーパーによる省電力・高コントラストな画面表示と、GPIO 直結物理ボタンによるスムーズな操作性を実現しています。
 
 ---
+## 最新の更新／修正／機能追加などは[最新のリリース](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/)を確認してください
 
 ## 主な特徴
 
@@ -26,7 +27,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ---
 
-## ハードウェア構成
+## ハードウェア構成(制作者の環境)
 
 | パーツ | 型番 / 仕様 |
 | :--- | :--- |
@@ -48,7 +49,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ---
 
-## 📂 ディレクトリ構成
+## ディレクトリ構成
 
 ```text
 .
@@ -64,7 +65,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ---
 
-## 🛠️ セットアップ手順
+## セットアップ手順
 
 ### 1. 依存ライブラリのインストール
 
@@ -115,7 +116,7 @@ sudo systemctl start dap.service
 ```
 
 ---
-# 修正／更新は[最新のリリース](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/)を確認してください
+
 
 ## ライセンス
 
