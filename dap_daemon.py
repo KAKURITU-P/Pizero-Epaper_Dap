@@ -1232,7 +1232,7 @@ def update_menu_items(reset_cursor=True):
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
-            "Git Pull & アプリ再起動",  # <-- 追加
+            "GitHubから更新",  # <-- 追加
             "アプリ再起動",
             "ライセンス表示",
             f"IP: {get_ip_address()}",
@@ -1508,7 +1508,7 @@ def on_btn_menu_or_select():
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
 
-                    elif selected == "Git Pull & アプリ再起動":
+                    elif selected == "GitHubから更新":
                         clean_shutdown_display("Updating & Restarting...")
                         
                         # バックグラウンドまたは別プロセスで Git fetch/reset 実行後に dap サービスを再起動
