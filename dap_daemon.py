@@ -1231,6 +1231,7 @@ def update_menu_items(reset_cursor=True):
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
+            "Git Pull & アプリ再起動",  # <-- 追加
             "アプリ再起動",
             "ライセンス表示",
             f"IP: {get_ip_address()}",
@@ -1504,6 +1505,26 @@ def on_btn_menu_or_select():
                     if selected == "曲ライブラリ再読み込み":
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
+
+                    elif selected == "Git Pull & アプリ再起動":
+                        clean_shutdown_display("Updating & Restarting...")
+                        
+                        # バックグラウンドまたは別プロセスで Git fetch/reset 実行後に dap サービスを再起動
+                        def _update_and_restart():
+                            try:
+                                repo_dir = "/home/pi/dap" # ※リポジトリのパスを指定
+                                # 1. remote情報を取得
+                                subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
+                                # 2. ローカルの変更を強制上書きして最新のmain(またはmaster)に合わせる
+                                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
+                            except Exception as e:
+                                print(f"Git update failed: {e}")
+                            
+                            # 3. アプリ(dap daemon)再起動
+                            subprocess.run(["sudo", "systemctl", "restart", "dap"])
+
+                        threading.Thread(target=_update_and_restart, daemon=True).start()
+
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
                             status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P"
