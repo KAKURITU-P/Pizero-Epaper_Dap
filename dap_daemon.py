@@ -213,6 +213,7 @@ repeat_mode = 0
 # スリープタイマー (分)
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
+sleep_timer_pending = False  
 
 def load_favorites():
     global favorites_list
@@ -1286,8 +1287,9 @@ def toggle_repeat():
     repeat_mode = (repeat_mode + 1) % 3
 
 def set_sleep_timer(mins):
-    global sleep_timer_minutes, sleep_timer_end_time
+    global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
     sleep_timer_minutes = mins
+    sleep_timer_pending = False  # ← 追加（タイマー更新時にフラグをクリア）
     if mins > 0:
         sleep_timer_end_time = time.time() + (mins * 60)
     else:
@@ -1718,10 +1720,42 @@ try:
         time.sleep(0.2)
         now = time.time()
 
-        # スリープタイマー監視
+        # --- スリープタイマー監視 ---
+        # 時間が来たら即シャットダウンせず、待機フラグを立てる
         if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
+            sleep_timer_pending = True
+            sleep_timer_end_time = 0.0  # 二重判定防止
+
+        # 音楽が停止中にタイマー時間が来た場合はそのままシャットダウン
+        if sleep_timer_pending and not is_playing:
             clean_shutdown_display("Sleep Timer Off...")
             subprocess.run(["sudo", "shutdown", "-h", "now"])
+
+        # --- 曲の再生・終了監視 ---
+        if is_playing:
+            music_busy = pygame.mixer.music.get_busy()
+            
+            # 曲が終了したか判定
+            if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
+                # ★ タイマー待機フラグが立っていれば、曲が終わったこの瞬間でシャットダウン
+                if sleep_timer_pending:
+                    clean_shutdown_display("Sleep Timer Off...")
+                    subprocess.run(["sudo", "shutdown", "-h", "now"])
+                
+                # 通常の曲送り処理
+                elif playlist:
+                    if repeat_mode == 1:
+                        play_current_track(full_refresh=True)
+                    elif repeat_mode == 2:
+                        current_track_idx = (current_track_idx + 1) % len(playlist)
+                        play_current_track(full_refresh=True)
+                    else:
+                        if current_track_idx < len(playlist) - 1:
+                            current_track_idx += 1
+                            play_current_track(full_refresh=True)
+                        else:
+                            is_playing = False
+                            request_display_update(is_full_refresh=False)
 
         with state_lock:
             cur_sec = get_current_sec()
