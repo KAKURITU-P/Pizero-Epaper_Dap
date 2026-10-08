@@ -85,7 +85,10 @@ volume = 0.1
 def safe_init_audio():
     try:
         if pygame.mixer.get_init():
-            pygame.mixer.music.stop()
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
             pygame.mixer.quit()
 
         if asound:
@@ -94,13 +97,13 @@ def safe_init_audio():
             except Exception:
                 pass
 
-        time.sleep(0.2)
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
-        pygame.mixer.music.set_volume(volume)
+        time.sleep(0.5)
+        os.environ['SDL_AUDIODRIVER'] = 'alsa'
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=8192)
+        set_cur_volume(volume)
         print(f"Audio initialized in [{audio_output_mode}] mode.")
     except Exception as e:
         print(f"Audio init failed ({e}).")
-
 safe_init_audio()
 
 # --- 2. e-Paper 初期化 ---
@@ -546,7 +549,7 @@ def render_cat_clock(image, draw, width, height):
         ship_img, mask = get_cropped_ship(idx, target_h)
         if ship_img and mask:
             pos_y = (sea_level - 1) - ship_img.height
-            image.paste(ship_img, (pos_y, pos_y), mask)
+            image.paste(ship_img, (pos_x, pos_y), mask)
             has_drawn = True
 
     if not has_drawn:
@@ -795,6 +798,13 @@ def connect_bt_device(mac, name="Unknown"):
     connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
+
+    # 切替時のALSAフリーズ防止のためミキサーを停止
+    if pygame.mixer.get_init():
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
 
     config_content = f"""pcm.!default {{
     type plug
