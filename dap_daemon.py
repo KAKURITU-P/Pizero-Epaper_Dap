@@ -82,6 +82,14 @@ os.environ['SDL_AUDIODRIVER'] = 'alsa'
 
 volume = 0.1
 
+def set_cur_volume(vol):
+    """0.0~1.0 の線形値を、人間の聴感に合わせた2乗カーブに変換して設定"""
+    if pygame.mixer.get_init():
+        # 人間の耳に合わせて2乗カーブ（vol ** 2）を適用
+        # よりゆるやかにしたい場合は vol ** 3（3乗）にする
+        scaled_vol = vol ** 2
+        pygame.mixer.music.set_volume(scaled_vol)
+
 def safe_init_audio():
     try:
         if pygame.mixer.get_init():
@@ -1569,7 +1577,7 @@ def on_btn_up_action():
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
-            if pygame.mixer.get_init(): pygame.mixer.music.set_volume(volume)
+            set_cur_volume(volume)
             request_display_update(is_full_refresh=False)
         else:
             if cursor_idx > 0:
@@ -1590,7 +1598,7 @@ def on_btn_down_action():
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
-            if pygame.mixer.get_init(): pygame.mixer.music.set_volume(volume)
+            set_cur_volume(volume)
             request_display_update(is_full_refresh=False)
         else:
             if cursor_idx < len(menu_items) - 1:
