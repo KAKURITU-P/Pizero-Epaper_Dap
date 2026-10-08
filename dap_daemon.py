@@ -80,7 +80,7 @@ except Exception:
 # --- 1. Pygame オーディオ初期化 ---
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
 
-volume = 0.1
+volume = 0.2
 
 def set_cur_volume(vol):
     """0.0~1.0 の線形値を、人間の聴感に合わせた2乗カーブに変換して設定"""
