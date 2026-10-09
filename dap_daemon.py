@@ -107,22 +107,27 @@ def safe_init_audio():
                 except Exception:
                     pass
 
-            # BT接続時はBlueALSAのソケットが落ち着くまで少し長めに待つ
+            os.environ['SDL_AUDIODRIVER'] = 'alsa'
+
             if audio_output_mode == "BT":
-                time.sleep(1.0)
-                buf_size = 4096  # BT時はバッファを小さくして応答性を確保
+                buf_size = 4096
+                # BlueALSA PCM が作成されるまで最大5回リトライ
+                for i in range(5):
+                    try:
+                        time.sleep(1.0)
+                        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=buf_size)
+                        break
+                    except Exception as err:
+                        print(f"BT Audio init retry {i+1}/5: {err}")
             else:
                 time.sleep(0.3)
-                buf_size = 8192
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=8192)
 
-            os.environ['SDL_AUDIODRIVER'] = 'alsa'
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=buf_size)
             set_cur_volume(volume)
             print(f"Audio initialized in [{audio_output_mode}] mode.")
         except Exception as e:
             print(f"Audio init failed ({e}).")
 
-    # メンスレッドやUIを止めないように非同期で初期化実行
     threading.Thread(target=_init_thread, daemon=True).start()
 
 safe_init_audio()
@@ -859,9 +864,13 @@ def connect_bt_device(mac, name="Unknown"):
     subprocess.run(["bluetoothctl", "pair", mac], check=False)
     time.sleep(2.0)
 
+    # Bluetooth接続コマンド実行
     subprocess.run(["bluetoothctl", "connect", mac], check=False)
+    
+    # A2DPストリームがOS側に認識されるまで少し待つ
     time.sleep(3.0)
 
+    # 接続確認
     if is_bt_connected(mac):
         audio_output_mode = "BT"
         try:
@@ -869,6 +878,7 @@ def connect_bt_device(mac, name="Unknown"):
         except Exception:
             pass
         
+        # 接続が完全に確立されてからオーディオ初期化
         safe_init_audio()
         apply_eq_settings()
         status_message = "接続成功"
@@ -1547,7 +1557,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta2]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta3]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
