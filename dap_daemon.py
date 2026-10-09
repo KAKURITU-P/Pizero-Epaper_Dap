@@ -1516,16 +1516,29 @@ def on_btn_menu_or_select():
                             pygame.mixer.music.stop()
                         except Exception:
                             pass
-                        clean_shutdown_display("Updating & Restarting...")
-                        
+
                         def _update_and_restart():
+                            # 1. 画面に「Updating...」を描画（epd.sleep() は呼ばない）
+                            try:
+                                epd.init()
+                                img = Image.new('1', (epd.height, epd.width), 255)
+                                draw = ImageDraw.Draw(img)
+                                draw.rectangle([0, 0, epd.height, epd.width], fill=255)
+                                draw.text((20, (epd.width // 2) - 10), "Updating from GitHub...", font=font_title, fill=0)
+                                epd.display(epd.getbuffer(img))
+                                time.sleep(1.0)
+                            except Exception as e:
+                                print(f"Update display error: {e}")
+
+                            # 2. Git Pull (fetch & reset)
                             try:
                                 repo_dir = "/home/pi/dap"
                                 subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
                                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
                             except Exception as e:
                                 print(f"Git update failed: {e}")
-                            
+
+                            # 3. アプリ再起動
                             subprocess.run(["sudo", "systemctl", "restart", "dap"])
 
                         threading.Thread(target=_update_and_restart, daemon=True).start()
