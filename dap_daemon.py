@@ -828,21 +828,14 @@ def connect_bt_device(mac, name="Unknown"):
         except Exception:
             pass
 
+    # equal を挟まず、直接 bluealsa を plug でラップする
     config_content = f"""pcm.!default {{
     type plug
-    slave.pcm "equal"
-}}
-
-pcm.equal {{
-    type equal
     slave.pcm {{
         type bluealsa
         device "{mac}"
         profile "a2dp"
     }}
-}}
-ctl.equal {{
-    type equal
 }}
 """
     try:
@@ -905,17 +898,10 @@ def set_audio_output(mode, mac=None):
             status_message = ""
 
     elif mode == "PWM":
+        # equal を挟まず、直接 plughw:0,0 または hw:0,0 に流す
         pwm_config = """pcm.!default {
     type plug
-    slave.pcm "equal"
-}
-
-pcm.equal {
-    type equal
-    slave.pcm "plughw:0,0"
-}
-ctl.equal {
-    type equal
+    slave.pcm "hw:0,0"
 }
 """
         try:
@@ -1561,7 +1547,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta1]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta2]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
