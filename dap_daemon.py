@@ -903,6 +903,15 @@ def set_audio_output(mode, mac=None):
     status_message = f"切替中: {mode}"
     request_display_update(is_full_refresh=False)
 
+    # サービス切替前に必ず Pygame mixer を完全にシャットダウン
+    if pygame.mixer.get_init():
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        pygame.mixer.quit()
+        time.sleep(0.5)
+
     if mode == "BT":
         target_mac = mac or connected_bt_mac
         if target_mac:
@@ -914,7 +923,6 @@ def set_audio_output(mode, mac=None):
             status_message = ""
 
     elif mode == "PWM":
-        # equal を挟まず、直接 plughw:0,0 または hw:0,0 に流す
         pwm_config = """pcm.!default {
     type plug
     slave.pcm "hw:0,0"
@@ -1568,7 +1576,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta4]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta5]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
