@@ -91,27 +91,40 @@ def set_cur_volume(vol):
         pygame.mixer.music.set_volume(scaled_vol)
 
 def safe_init_audio():
-    try:
-        if pygame.mixer.get_init():
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
-            pygame.mixer.quit()
+    def _init_thread():
+        global is_playing
+        try:
+            if pygame.mixer.get_init():
+                try:
+                    pygame.mixer.music.stop()
+                except Exception:
+                    pass
+                pygame.mixer.quit()
 
-        if asound:
-            try:
-                asound.snd_config_update_free_global()
-            except Exception:
-                pass
+            if asound:
+                try:
+                    asound.snd_config_update_free_global()
+                except Exception:
+                    pass
 
-        time.sleep(0.5)
-        os.environ['SDL_AUDIODRIVER'] = 'alsa'
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=8192)
-        set_cur_volume(volume)
-        print(f"Audio initialized in [{audio_output_mode}] mode.")
-    except Exception as e:
-        print(f"Audio init failed ({e}).")
+            # BT接続時はBlueALSAのソケットが落ち着くまで少し長めに待つ
+            if audio_output_mode == "BT":
+                time.sleep(1.0)
+                buf_size = 4096  # BT時はバッファを小さくして応答性を確保
+            else:
+                time.sleep(0.3)
+                buf_size = 8192
+
+            os.environ['SDL_AUDIODRIVER'] = 'alsa'
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=buf_size)
+            set_cur_volume(volume)
+            print(f"Audio initialized in [{audio_output_mode}] mode.")
+        except Exception as e:
+            print(f"Audio init failed ({e}).")
+
+    # メンスレッドやUIを止めないように非同期で初期化実行
+    threading.Thread(target=_init_thread, daemon=True).start()
+
 safe_init_audio()
 
 # --- 2. e-Paper 初期化 ---
@@ -1251,7 +1264,7 @@ def update_menu_items(reset_cursor=True):
 def reset_inactivity_timer():
     global last_user_action_time
     last_user_action_time = time.time()
-
+    
 def play_current_track(full_refresh=False):
     global is_playing, total_duration_sec, track_paused_time, last_drawn_segment
     global start_time, paused_duration, pause_start_time
@@ -1264,14 +1277,27 @@ def play_current_track(full_refresh=False):
         paused_duration = 0.0
         pause_start_time = 0.0
 
-        try:
-            pygame.mixer.music.load(filepath)
-            pygame.mixer.music.play()
-            is_playing = True
-            save_resume_state()
-        except Exception as e:
-            print(f"Play error: {e}")
+        def _do_play():
+            global is_playing
+            try:
+                # safe_init_audio() 等でmixerが再初期化中の場合は少し待つ
+                retry = 0
+                while not pygame.mixer.get_init() and retry < 10:
+                    time.sleep(0.2)
+                    retry += 1
 
+                pygame.mixer.music.load(filepath)
+                pygame.mixer.music.play()
+                is_playing = True
+                save_resume_state()
+            except Exception as e:
+                print(f"Play error: {e}")
+                is_playing = False # エラー時は確実に再生停止状態に戻す
+
+        # 再生処理を別スレッドで実行（画面フリーズを回避）
+        threading.Thread(target=_do_play, daemon=True).start()
+
+        # UI（画面）は待たずに即座に更新リクエストを飛ばす
         request_display_update(is_full_refresh=full_refresh)
 
 def toggle_shuffle():
