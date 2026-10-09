@@ -726,7 +726,7 @@ def display_worker():
                             outline=0, fill=0
                         )
 
-                time_str = format_time_str(tot_sec)
+                time_str = f"{format_time_str(current_sec)} / {format_time_str(tot_sec)}"
                 draw.text((8, 87), time_str, font=font_main, fill=0)
 
             else:
@@ -785,7 +785,7 @@ def display_worker():
         except Exception as e:
             print(f"Display render error: {e}")
             current_epd_mode = None
-            time.sleep(0.1)
+            time.sleep(0.5)
 
 threading.Thread(target=display_worker, daemon=True).start()
 
@@ -1327,7 +1327,7 @@ def parse_clean_name(selected_str, prefix):
     return raw.replace(" (接続済)", "").strip()
 
 def on_btn_menu_or_select():
-    if is_updating: return  # 更新中は入力ガード
+    if is_updating: return
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor, is_updating, is_playing
     with state_lock:
@@ -1488,7 +1488,7 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=True)
                     else:
                         album_list = sorted(list(albums_dict.keys()))
-                        chosen_idx = cursor_idx - 2  # 0番目: "../", 1番目: "[★ お気に入り]"
+                        chosen_idx = cursor_idx - 2
                         if 0 <= chosen_idx < len(album_list):
                             selected_album = album_list[chosen_idx]
                             current_screen = "MENU_TRACKS"
@@ -1518,7 +1518,6 @@ def on_btn_menu_or_select():
                             pass
 
                         def _update_and_restart():
-                            # 1. 画面に「Updating...」を描画（epd.sleep() は呼ばない）
                             try:
                                 epd.init()
                                 img = Image.new('1', (epd.height, epd.width), 255)
@@ -1530,7 +1529,6 @@ def on_btn_menu_or_select():
                             except Exception as e:
                                 print(f"Update display error: {e}")
 
-                            # 2. Git Pull (fetch & reset)
                             try:
                                 repo_dir = "/home/pi/dap"
                                 subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
@@ -1538,7 +1536,6 @@ def on_btn_menu_or_select():
                             except Exception as e:
                                 print(f"Git update failed: {e}")
 
-                            # 3. アプリ再起動
                             subprocess.run(["sudo", "systemctl", "restart", "dap"])
 
                         threading.Thread(target=_update_and_restart, daemon=True).start()
@@ -1732,6 +1729,7 @@ try:
         except Exception as e:
             print(f"Resume load error: {e}")
 
+    # 初回全画面更新リクエスト
     request_display_update(is_full_refresh=True)
 
     while True:
