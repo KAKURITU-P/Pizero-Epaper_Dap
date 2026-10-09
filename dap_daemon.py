@@ -65,7 +65,9 @@ if os.path.exists(asoundrc_path):
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
+        subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
         subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+        time.sleep(1.0)
     else:
         audio_output_mode = "PWM"
 else:
@@ -85,8 +87,6 @@ volume = 0.2
 def set_cur_volume(vol):
     """0.0~1.0 の線形値を、人間の聴感に合わせた2乗カーブに変換して設定"""
     if pygame.mixer.get_init():
-        # 人間の耳に合わせて2乗カーブ（vol ** 2）を適用
-        # よりゆるやかにしたい場合は vol ** 3（3乗）にする
         scaled_vol = vol ** 2
         pygame.mixer.music.set_volume(scaled_vol)
 
@@ -214,6 +214,9 @@ repeat_mode = 0
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
 sleep_timer_pending = False  
+
+# 更新状態管理フラグ
+is_updating = False
 
 def load_favorites():
     global favorites_list
@@ -698,8 +701,6 @@ def display_worker():
                     full_path = pl[track_idx]
                     song_filename = os.path.splitext(os.path.basename(full_path))[0]
                     artist_label = get_track_artist_info(full_path)
-                    ##if full_path in favorites_list:
-                    ##   song_filename = "[★] " + song_filename
                 else:
                     song_filename = "曲ファイルがありません"
                     artist_label = "不明なアーティスト"
@@ -808,7 +809,6 @@ def connect_bt_device(mac, name="Unknown"):
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
 
-    # 切替時のALSAフリーズ防止のためミキサーを停止
     if pygame.mixer.get_init():
         try:
             pygame.mixer.music.stop()
@@ -1232,7 +1232,7 @@ def update_menu_items(reset_cursor=True):
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
-            "GitHubから更新",  # <-- 追加
+            "GitHubから更新",
             "アプリ再起動",
             "ライセンス表示",
             f"IP: {get_ip_address()}",
@@ -1289,7 +1289,7 @@ def toggle_repeat():
 def set_sleep_timer(mins):
     global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
     sleep_timer_minutes = mins
-    sleep_timer_pending = False  # ← 追加（タイマー更新時にフラグをクリア）
+    sleep_timer_pending = False
     if mins > 0:
         sleep_timer_end_time = time.time() + (mins * 60)
     else:
@@ -1327,8 +1327,9 @@ def parse_clean_name(selected_str, prefix):
     return raw.replace(" (接続済)", "").strip()
 
 def on_btn_menu_or_select():
+    if is_updating: return  # 更新中は入力ガード
     if not debounce("btn_menu_select"): return
-    global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
+    global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor, is_updating, is_playing
     with state_lock:
         reset_inactivity_timer()
 
@@ -1509,20 +1510,22 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=False)
 
                     elif selected == "GitHubから更新":
+                        is_updating = True
+                        is_playing = False
+                        try:
+                            pygame.mixer.music.stop()
+                        except Exception:
+                            pass
                         clean_shutdown_display("Updating & Restarting...")
                         
-                        # バックグラウンドまたは別プロセスで Git fetch/reset 実行後に dap サービスを再起動
                         def _update_and_restart():
                             try:
-                                repo_dir = "/home/pi/dap" # ※リポジトリのパスを指定
-                                # 1. remote情報を取得
+                                repo_dir = "/home/pi/dap"
                                 subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
-                                # 2. ローカルの変更を強制上書きして最新のmain(またはmaster)に合わせる
                                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
                             except Exception as e:
                                 print(f"Git update failed: {e}")
                             
-                            # 3. アプリ(dap daemon)再起動
                             subprocess.run(["sudo", "systemctl", "restart", "dap"])
 
                         threading.Thread(target=_update_and_restart, daemon=True).start()
@@ -1548,6 +1551,7 @@ def on_btn_menu_or_select():
                         subprocess.run(["sudo", "shutdown", "-h", "now"])
 
 def on_btn_play_or_back():
+    if is_updating: return
     if not debounce("btn_play_back"): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
     with state_lock:
@@ -1588,6 +1592,7 @@ def on_btn_play_or_back():
             request_display_update(is_full_refresh=True)
 
 def on_btn_up_action():
+    if is_updating: return
     if not debounce("btn_up_act"): return
     if exit_cat_clock_if_needed(): return
     global volume, cursor_idx, scroll_offset
@@ -1609,6 +1614,7 @@ def on_btn_up_action():
                 request_display_update(is_full_refresh=False)
 
 def on_btn_down_action():
+    if is_updating: return
     if not debounce("btn_down_act"): return
     if exit_cat_clock_if_needed(): return
     global volume, cursor_idx, scroll_offset
@@ -1630,27 +1636,25 @@ def on_btn_down_action():
                 request_display_update(is_full_refresh=False)
 
 def on_btn_prev():
+    if is_updating: return
     if not debounce("btn_prev"): return
     if exit_cat_clock_if_needed(): return
     global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
         
-        # 1. EQ画面の場合
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. アルバムの曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
         elif current_screen == "MENU_TRACKS":
             track_paths = albums_dict.get(selected_album, [])
-            chosen_idx = cursor_idx - 1  # 0番目は "../ (戻る)"
+            chosen_idx = cursor_idx - 1
             if 0 <= chosen_idx < len(track_paths):
                 target_path = track_paths[chosen_idx]
                 is_fav = toggle_favorite_by_path(target_path)
                 show_fav_toast(is_fav)
 
-        # 3. 通常再生時などの曲戻し動作
         elif playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
@@ -1665,13 +1669,14 @@ def handle_next_btn_press():
     start_t = time.time()
     while btn_next.is_pressed:
         time.sleep(0.05)
+        if is_updating: return
         if current_screen == "PLAY" and (time.time() - start_t) >= 1.2:
             with state_lock:
                 is_fav = toggle_favorite_current_track()
                 show_fav_toast(is_fav)
             return
 
-    # 通常押し（短押し）処理
+    if is_updating: return
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -1682,6 +1687,7 @@ def handle_next_btn_press():
             play_current_track(full_refresh=True)
 
 def on_btn_next():
+    if is_updating: return
     if not debounce("btn_next"): return
     if exit_cat_clock_if_needed(): return
     threading.Thread(target=handle_next_btn_press, daemon=True).start()
@@ -1705,7 +1711,6 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
-    # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
     if playlist:
         filepath = playlist[current_track_idx]
         total_duration_sec = get_track_duration_sec(filepath)
@@ -1718,44 +1723,19 @@ try:
 
     while True:
         time.sleep(0.2)
+        if is_updating:
+            continue
+
         now = time.time()
 
         # --- スリープタイマー監視 ---
-        # 時間が来たら即シャットダウンせず、待機フラグを立てる
         if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
             sleep_timer_pending = True
-            sleep_timer_end_time = 0.0  # 二重判定防止
+            sleep_timer_end_time = 0.0
 
-        # 音楽が停止中にタイマー時間が来た場合はそのままシャットダウン
         if sleep_timer_pending and not is_playing:
             clean_shutdown_display("Sleep Timer Off...")
             subprocess.run(["sudo", "shutdown", "-h", "now"])
-
-        # --- 曲の再生・終了監視 ---
-        if is_playing:
-            music_busy = pygame.mixer.music.get_busy()
-            
-            # 曲が終了したか判定
-            if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
-                # ★ タイマー待機フラグが立っていれば、曲が終わったこの瞬間でシャットダウン
-                if sleep_timer_pending:
-                    clean_shutdown_display("Sleep Timer Off...")
-                    subprocess.run(["sudo", "shutdown", "-h", "now"])
-                
-                # 通常の曲送り処理
-                elif playlist:
-                    if repeat_mode == 1:
-                        play_current_track(full_refresh=True)
-                    elif repeat_mode == 2:
-                        current_track_idx = (current_track_idx + 1) % len(playlist)
-                        play_current_track(full_refresh=True)
-                    else:
-                        if current_track_idx < len(playlist) - 1:
-                            current_track_idx += 1
-                            play_current_track(full_refresh=True)
-                        else:
-                            is_playing = False
-                            request_display_update(is_full_refresh=False)
 
         with state_lock:
             cur_sec = get_current_sec()
@@ -1772,18 +1752,21 @@ try:
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
-            # 曲終了時の自動遷移 ＆ リピート処理
+            # --- 曲の再生・終了監視 ---
             if is_playing:
                 music_busy = pygame.mixer.music.get_busy()
                 
                 if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
-                    if playlist:
-                        if repeat_mode == 1:  # 1曲リピート
+                    if sleep_timer_pending:
+                        clean_shutdown_display("Sleep Timer Off...")
+                        subprocess.run(["sudo", "shutdown", "-h", "now"])
+                    elif playlist:
+                        if repeat_mode == 1:
                             play_current_track(full_refresh=True)
-                        elif repeat_mode == 2:  # 全曲リピート
+                        elif repeat_mode == 2:
                             current_track_idx = (current_track_idx + 1) % len(playlist)
                             play_current_track(full_refresh=True)
-                        else:  # リピートOFF
+                        else:
                             if current_track_idx < len(playlist) - 1:
                                 current_track_idx += 1
                                 play_current_track(full_refresh=True)
