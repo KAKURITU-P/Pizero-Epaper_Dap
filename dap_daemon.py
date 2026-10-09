@@ -111,14 +111,20 @@ def safe_init_audio():
 
             if audio_output_mode == "BT":
                 buf_size = 4096
+                init_success = False
                 # BlueALSA PCM が作成されるまで最大5回リトライ
                 for i in range(5):
                     try:
                         time.sleep(1.0)
                         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=buf_size)
+                        init_success = True
                         break
                     except Exception as err:
                         print(f"BT Audio init retry {i+1}/5: {err}")
+                
+                if not init_success:
+                    print("[ERROR] BlueALSA device setup failed. Audio init aborted.")
+                    return
             else:
                 time.sleep(0.3)
                 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=8192)
@@ -473,7 +479,7 @@ def get_bt_codec_info():
             "--method", "org.freedesktop.DBus.Properties.Get",
             "org.bluealsa.PCM", "Codec"
         ]
-        res = subprocess.check_output(cmd, text=True, errors="ignore")
+        res = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, errors="ignore")
         if "'" in res:
             codec = res.split("'")[1]
             return codec.upper()
@@ -481,7 +487,7 @@ def get_bt_codec_info():
         pass
 
     try:
-        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, errors="ignore")
+        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, stderr=subprocess.DEVNULL, errors="ignore")
         if "Connected: yes" in res:
             for line in res.splitlines():
                 if "Name:" in line:
@@ -579,7 +585,7 @@ def render_cat_clock(image, draw, width, height):
         ship_img, mask = get_cropped_ship(idx, target_h)
         if ship_img and mask:
             pos_y = (sea_level - 1) - ship_img.height
-            image.paste(ship_img, (pos_x, pos_y), mask)
+            image.paste(ship_img, (pos_y), mask)
             has_drawn = True
 
     if not has_drawn:
@@ -1282,6 +1288,11 @@ def play_current_track(full_refresh=False):
                     time.sleep(0.2)
                     retry += 1
 
+                if not pygame.mixer.get_init():
+                    print("[SKIP] Cannot play: mixer not initialized")
+                    is_playing = False
+                    return
+
                 pygame.mixer.music.load(filepath)
                 pygame.mixer.music.play()
                 is_playing = True
@@ -1557,7 +1568,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta3]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta4]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
