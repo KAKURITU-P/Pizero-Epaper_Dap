@@ -1576,7 +1576,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta5]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta6]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
@@ -1706,19 +1706,8 @@ def on_btn_prev():
                 play_current_track(full_refresh=True)
 
 def handle_next_btn_press():
-    """NEXTボタンの長押し検知 (PLAY画面での Fav トグル) ＆ 通常押し (曲送り)"""
+    """NEXTボタンの通常押し (曲送り / EQカーソル移動)"""
     global current_track_idx, eq_cursor
-    
-    start_t = time.time()
-    while btn_next.is_pressed:
-        time.sleep(0.05)
-        if current_screen == "PLAY" and (time.time() - start_t) >= 1.2:
-            with state_lock:
-                is_fav = toggle_favorite_current_track()
-                show_fav_toast(is_fav)
-            return
-
-    # 通常押し（短押し）処理
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -1731,6 +1720,7 @@ def handle_next_btn_press():
 def on_btn_next():
     if not debounce("btn_next"): return
     if exit_cat_clock_if_needed(): return
+    # スレッドを介さず直接実行でも問題ありませんが、既存の構造に合わせて呼び出します
     threading.Thread(target=handle_next_btn_press, daemon=True).start()
 
 # --- 10. GPIO割り当て ---
