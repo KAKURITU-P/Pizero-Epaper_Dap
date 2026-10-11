@@ -1293,12 +1293,25 @@ def update_menu_items(reset_cursor=True):
         menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in history_list]
 
     elif current_screen == "MENU_CONN":
+        # 現在の rfkill 状態を取得して動作モードを自動判定
+        wifi_on, bt_on = get_rfkill_status()
+        if bt_on and not wifi_on:
+            current_mode_str = "[BT]"
+        elif wifi_on and not bt_on:
+            current_mode_str = "[WiFi]"
+        elif wifi_on and bt_on:
+            current_mode_str = "[BT+WiFi]"  # 万が一両方ONになった場合
+        else:
+            current_mode_str = "OFF"
+
         menu_items = [
             "../ (戻る)",
             "Wi-Fi設定",
             "Bluetooth設定",
-            f"APモード: {'ON' if get_ap_status() else 'OFF'}"
+            f"APモード: {'ON' if get_ap_status() else 'OFF'}",
+            f"動作モード: {current_mode_str}"  # ★APモードの下にステータスを追加！
         ]
+
     elif current_screen == "MENU_WIFI":
         wifi_on, _ = get_rfkill_status()
         saved_wifi_ssids = get_saved_wifi_ssids() if wifi_on else []
@@ -1564,6 +1577,10 @@ def on_btn_menu_or_select():
                         toggle_ap_mode()
                         update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
+                    elif selected.startswith("動作モード:"):
+                        # ★ステータス表示行なので、クリックされても何もせずスルー
+                        pass
+
 
                 elif current_screen == "MENU_WIFI":
                     if selected.startswith("Wi-Fi機能:"):
