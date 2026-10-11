@@ -1045,14 +1045,14 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(物理リンクDOWN版)"""
+    """自動再接続のループをへし折り、手動トグルを100%確実に機能させる排他コード"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
     target = "wifi" if dev_type == "wifi" else "bluetooth"
     
-    # 1. これから【ON（unblock）】にする場合の超厳格な排他シーケンス
+    # 1. これから【ON（unblock）】にする場合の排他シーケンス
     if action == "unblock":
         if dev_type == "wifi":
             # Bluetooth関連を完全に『即死』させる
@@ -1060,31 +1060,30 @@ def toggle_rfkill(dev_type):
             subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
             time.sleep(0.3)
             
-            # Wi-Fiを物理的に『起動』させる
-            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-            subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
+            # Wi-Fiを安全に起動
+            subprocess.run(["sudo", "rfkill", "unblock", "wifi"], check=False)
+            # ★NetworkManagerにWi-Fiデバイスの再稼働と自動接続を許可する
+            subprocess.run(["sudo", "nmcli", "device", "connect", "wlan0"], check=False)
             action = "unblock"
             target = "wifi"
             
         elif dev_type == "bt":
-            # Wi-Fiを完全に『即死』させる（物理リンクレベルで引きちぎる）
-            subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False) # APモードの残党も殺す
-            subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-            subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
-            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
+            # Wi-Fiを完全に『即死』させる
+            # ★最優先: OSが勝手にルーターに再接続を繰り返すループをここで強制切断する
+            subprocess.run(["sudo", "nmcli", "device", "disconnect", "wlan0"], check=False)
+            time.sleep(0.2)
+            # その後、電波を完全に遮断する
             subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
             time.sleep(0.3)
-            
             action = "unblock"
             target = "bluetooth"
 
     # 2. これから【OFF（block）】にする場合（Wi-Fi単体をOFFる時）
     elif action == "block" and dev_type == "wifi":
-        # Wi-Fiの息の根を物理的に止める
-        subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-        subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-        subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
-        subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
+        # ★OSの自動再接続機能を黙らせてから、安全にOFFにする
+        subprocess.run(["sudo", "nmcli", "device", "disconnect", "wlan0"], check=False)
+        time.sleep(0.2)
+        subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
             
     # 3. 本来のON/OFFコマンドを実行
     try:
@@ -1092,9 +1091,6 @@ def toggle_rfkill(dev_type):
         time.sleep(0.3)
     except Exception:
         pass
-
-
-
 
 def get_ap_status():
     try:
@@ -1774,7 +1770,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 7]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 8]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
