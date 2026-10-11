@@ -483,6 +483,7 @@ def get_ip_address():
                 if "inet " in line:
                     # タイポを修正：1回目の分割で得た要素(インデックス1)に対して再度スラッシュで分割する
                     return line.strip().split()[1].split('/')[0]
+
         except subprocess.TimeoutExpired:
             print("[WiFi Info] IP address fetch timeout")
         except Exception:
@@ -1044,12 +1045,11 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(コマンド修正版)"""
+    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(NetworkManager対応版)"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
-    # ★修正: rfkillコマンドが正しく認識する識別名 (wifi と bluetooth) に修正
     target = "wifi" if dev_type == "wifi" else "bluetooth"
     
     # これから【ON（unblock）】にする場合の超厳格な排他シーケンス
@@ -1058,19 +1058,29 @@ def toggle_rfkill(dev_type):
             # 1. まず何よりも先にBluetooth関連を完全に『即死』させる
             subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
             subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-            # 2. OS側の電波消滅処理が完全に完了するまで0.3秒待つ
             time.sleep(0.3)
-            # 3. 安全を確認してから、満を持してWi-Fiの unblock を許可する
+            
+            # 2. 安全を確認してから、満を持してWi-Fiを点火する
             action = "unblock"
             target = "wifi"
+            # ★追加：NetworkManager側のWi-Fi無線もONにする
+            subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
+            
         elif dev_type == "bt":
-            # 1. まず何よりも先にWi-Fi（SSHの元）を完全に『即死』させる
+            # 1. まず何よりも先にWi-Fiを完全に『即死』させる
+            # ★追加：rfkillだけでなく、NetworkManager側からWi-Fi無線を強制消灯する
+            subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
             subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
-            # 2. OS側の電波消滅処理が完全に完了するまで0.3秒待つ
             time.sleep(0.3)
-            # 3. 安全を確認してから、満を持してBluetoothの unblock を許可する
+            
+            # 2. 安全を確認してから、満を持してBluetoothを点火する
             action = "unblock"
             target = "bluetooth"
+
+    # これから【OFF（block）】にする場合（Wi-Fi単体をOFFる時の安全装置）
+    elif action == "block" and dev_type == "wifi":
+        # ★追加：Wi-FiをOFFにする時は、NetworkManager側も一緒にOFFにする
+        subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
             
     # 本来のON/OFFコマンドを実行
     try:
@@ -1078,6 +1088,7 @@ def toggle_rfkill(dev_type):
         time.sleep(0.3)
     except Exception:
         pass
+
 
 
 
@@ -1750,7 +1761,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 5]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 6]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
