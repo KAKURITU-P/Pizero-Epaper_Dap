@@ -3,4 +3,4 @@ __pycache__/
 *.log
 .DS_Store
 waveshare_epd/
-
+favorites.json
