@@ -1045,44 +1045,48 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(NetworkManager対応版)"""
+    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(物理リンクDOWN版)"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
     target = "wifi" if dev_type == "wifi" else "bluetooth"
     
-    # これから【ON（unblock）】にする場合の超厳格な排他シーケンス
+    # 1. これから【ON（unblock）】にする場合の超厳格な排他シーケンス
     if action == "unblock":
         if dev_type == "wifi":
-            # 1. まず何よりも先にBluetooth関連を完全に『即死』させる
+            # Bluetooth関連を完全に『即死』させる
             subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
             subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
             time.sleep(0.3)
             
-            # 2. 安全を確認してから、満を持してWi-Fiを点火する
+            # Wi-Fiを物理的に『起動』させる
+            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
+            subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
             action = "unblock"
             target = "wifi"
-            # ★追加：NetworkManager側のWi-Fi無線もONにする
-            subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
             
         elif dev_type == "bt":
-            # 1. まず何よりも先にWi-Fiを完全に『即死』させる
-            # ★追加：rfkillだけでなく、NetworkManager側からWi-Fi無線を強制消灯する
+            # Wi-Fiを完全に『即死』させる（物理リンクレベルで引きちぎる）
+            subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False) # APモードの残党も殺す
+            subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
             subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
+            subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
             subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
             time.sleep(0.3)
             
-            # 2. 安全を確認してから、満を持してBluetoothを点火する
             action = "unblock"
             target = "bluetooth"
 
-    # これから【OFF（block）】にする場合（Wi-Fi単体をOFFる時の安全装置）
+    # 2. これから【OFF（block）】にする場合（Wi-Fi単体をOFFる時）
     elif action == "block" and dev_type == "wifi":
-        # ★追加：Wi-FiをOFFにする時は、NetworkManager側も一緒にOFFにする
+        # Wi-Fiの息の根を物理的に止める
+        subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
+        subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
         subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
+        subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
             
-    # 本来のON/OFFコマンドを実行
+    # 3. 本来のON/OFFコマンドを実行
     try:
         subprocess.run(["sudo", "rfkill", action, target], check=False)
         time.sleep(0.3)
@@ -1730,28 +1734,37 @@ def on_btn_menu_or_select():
                         def _update_and_restart():
                             try:
                                 repo_dir = "/home/pi/dap"
-                                # 1. 【排他】Git通信をするため、一時的にBTとオーディオ関連を完全停止
-                                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+                                # 1. 【完全排他】通信を始めるため、まずBluetoothを徹底的に眠らせる
                                 subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+                                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
                                 
-                                # 2. Wi-Fiを起動して電波を掴むまで5秒待つ
-                                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+                                # 2. 機械レベルで眠らせていた Wi-Fi を叩き起こす（物理リンクUP）
+                                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
+                                subprocess.run(["sudo", "rfkill", "unblock", "wifi"], check=False)
+                                subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
+                                
+                                # 3. ルーターの電波を掴んでIPアドレスを再取得するまで「5秒」だけ待つ
                                 time.sleep(5.0)  
                                 
-                                # 3. いつも通りのGit更新処理
+                                # 4. いつも通りのGit更新処理（一瞬で完了します）
                                 subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
                                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
                             except Exception as e:
                                 print(f"Git update failed: {e}")
                             finally:
-                                # 4. 更新終了後、20秒の限界が来る前にWi-Fiを即座に完全遮断
-                                subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                                # 5. 成功・失敗に関わらず、20秒の自爆タイマーが鳴る前に即座にWi-Fiを物理DOWN（完全封印）
+                                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
+                                subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
+                                subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
+                                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
+                                subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
                                 time.sleep(0.5)
                             
-                            # 5. アプリを再起動して新しいコードを反映
+                            # 6. アプリを再起動して最新のコードを反映
                             subprocess.run(["sudo", "systemctl", "restart", "dap"])
 
                         threading.Thread(target=_update_and_restart, daemon=True).start()
+
 
 
                     elif selected == "ライセンス表示":
@@ -1761,7 +1774,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 6]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 7]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
