@@ -1044,12 +1044,13 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル"""
+    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル(コマンド修正版)"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
-    target = "wlan" if dev_type == "wifi" else "bluetooth"
+    # ★修正: rfkillコマンドが正しく認識する識別名 (wifi と bluetooth) に修正
+    target = "wifi" if dev_type == "wifi" else "bluetooth"
     
     # これから【ON（unblock）】にする場合の超厳格な排他シーケンス
     if action == "unblock":
@@ -1061,10 +1062,10 @@ def toggle_rfkill(dev_type):
             time.sleep(0.3)
             # 3. 安全を確認してから、満を持してWi-Fiの unblock を許可する
             action = "unblock"
-            target = "wlan"
+            target = "wifi"
         elif dev_type == "bt":
             # 1. まず何よりも先にWi-Fi（SSHの元）を完全に『即死』させる
-            subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+            subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
             # 2. OS側の電波消滅処理が完全に完了するまで0.3秒待つ
             time.sleep(0.3)
             # 3. 安全を確認してから、満を持してBluetoothの unblock を許可する
@@ -1077,6 +1078,7 @@ def toggle_rfkill(dev_type):
         time.sleep(0.3)
     except Exception:
         pass
+
 
 
 def get_ap_status():
@@ -1748,7 +1750,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 4]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 5]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
