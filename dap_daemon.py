@@ -1347,7 +1347,7 @@ def exit_cat_clock_if_needed():
     return False
 
 def check_easter_egg_trigger():
-    global easter_click_count, last_easter_click_time, current_screen, is_clock_unlocked, is_eq_unlocked
+    global easter_click_count, last_easter_click_time, is_clock_unlocked, is_eq_unlocked
     now = time.time()
     with state_lock:
         if now - last_easter_click_time > 3.0:
@@ -1360,8 +1360,6 @@ def check_easter_egg_trigger():
             easter_click_count = 0
             is_clock_unlocked = True
             is_eq_unlocked = True
-            current_screen = "CAT_CLOCK"
-            request_display_update(is_full_refresh=True)
             return True
     return False
 
@@ -1578,7 +1576,12 @@ def on_btn_menu_or_select():
                         threading.Thread(target=_update_and_restart, daemon=True).start()
 
                     elif selected == "ライセンス表示":
-                        if not check_easter_egg_trigger():
+                        if check_easter_egg_trigger():
+                            # イースターエッグ発動時（5回連続クリック）
+                            current_screen = "CAT_CLOCK"
+                            request_display_update(is_full_refresh=True)
+                        else:
+                            # 通常のライセンス表示
                             status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta6]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
@@ -1746,14 +1749,15 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
-    # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
-    if playlist:
-        filepath = playlist[current_track_idx]
-        total_duration_sec = get_track_duration_sec(filepath)
-        try:
-            pygame.mixer.music.load(filepath)
-        except Exception as e:
-            print(f"Resume load error: {e}")
+    with state_lock:
+        if playlist:
+            # 起動時はロードのみ行い、インデックスを進めない
+            filepath = playlist[current_track_idx]
+            total_duration_sec = get_track_duration_sec(filepath)
+            try:
+                pygame.mixer.music.load(filepath)
+            except Exception as e:
+                print(f"Resume load error: {e}")
 
     request_display_update(is_full_refresh=True)
 
