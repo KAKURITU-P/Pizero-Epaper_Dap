@@ -1014,22 +1014,34 @@ def set_audio_output(mode, mac=None):
 
 
 # --- 8. Bluetooth / Wi-Fi / AP 関連 ---
-# --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
-    """LinuxのsysfsからWi-FiとBTのblock状態を直接読み込み、メモリとCPU負荷を激減させる"""
+    """rfkillのインデックス変動に対応し、名前を識別して状態を100%確実に取得する"""
     wifi_enabled, bt_enabled = True, True
     try:
-        # /sys/class/rfkill/ の中身をファイル直読み (1はblock、0はunblock)
-        # with open を使うことで、読み終わった瞬間にメモリとファイル資源を100%確実に解放します
-        if os.path.exists("/sys/class/rfkill/rfkill0/soft"):
-            with open("/sys/class/rfkill/rfkill0/soft", "r") as f:
-                if f.read().strip() == "1": wifi_enabled = False
-        if os.path.exists("/sys/class/rfkill/rfkill1/soft"):
-            with open("/sys/class/rfkill/rfkill1/soft", "r") as f:
-                if f.read().strip() == "1": bt_enabled = False
-    except Exception:
-        pass
+        # /sys/class/rfkill/ の下にあるすべてのフォルダーをループでチェックする
+        for base_dir in glob.glob("/sys/class/rfkill/rfkill*"):
+            name_path = os.path.join(base_dir, "name")
+            soft_path = os.path.join(base_dir, "soft")
+            
+            if os.path.exists(name_path) and os.path.exists(soft_path):
+                # デバイスの名前（wlan0 や hci0 など）を確認する
+                with open(name_path, "r") as f:
+                    dev_name = f.read().strip().lower()
+                
+                # block状態（1なら無効、0なら有効）を確認する
+                with open(soft_path, "r") as f:
+                    is_blocked = (f.read().strip() == "1")
+                
+                # 名前を基準に、Wi-FiかBluetoothかを正確に判定する
+                if "wlan" in dev_name or "wifi" in dev_name:
+                    if is_blocked: wifi_enabled = False
+                elif "hci" in dev_name or "blue" in dev_name:
+                    if is_blocked: bt_enabled = False
+    except Exception as e:
+        print(f"[rfkill] Fetch error: {e}")
+        
     return wifi_enabled, bt_enabled
+
 
 def toggle_rfkill(dev_type):
     wifi_on, bt_on = get_rfkill_status()
@@ -1726,7 +1738,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 2]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 3]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
