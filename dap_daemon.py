@@ -22,6 +22,9 @@ from gpiozero import Button
 sys.path.append("/home/pi/dap")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# --- ロックオブジェクト定義 ---
+state_lock = threading.Lock()
+
 # --- バッテリー情報取得関数 ---
 def get_battery_info():
     """バッテリーの % と V を取得"""
@@ -92,7 +95,6 @@ def set_cur_volume(vol):
 
 def safe_init_audio():
     def _init_thread():
-        global is_playing
         try:
             if pygame.mixer.get_init():
                 try:
@@ -112,7 +114,6 @@ def safe_init_audio():
             if audio_output_mode == "BT":
                 buf_size = 4096
                 init_success = False
-                # BlueALSA PCM が作成されるまで最大5回リトライ
                 for i in range(5):
                     try:
                         time.sleep(1.0)
@@ -231,15 +232,11 @@ selected_album = None
 current_track_idx = 0
 favorites_list = []
 
-# リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
 repeat_mode = 0
-
-# スリープタイマー (分)
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
 sleep_timer_pending = False  
 
-# 更新状態管理フラグ
 is_updating = False
 
 def load_favorites():
@@ -258,44 +255,49 @@ def save_favorites():
     except Exception as e:
         print(f"Fav save error: {e}")
 
-# --- お気に入り追加・削除のヘルパー関数 ---
 def toggle_favorite_by_path(filepath):
-    """指定されたファイルパスをお気に入りに追加/削除する"""
     global favorites_list
-    if filepath in favorites_list:
-        favorites_list.remove(filepath)
-        is_fav = False
-    else:
-        favorites_list.append(filepath)
-        is_fav = True
+    with state_lock:
+        if filepath in favorites_list:
+            favorites_list.remove(filepath)
+            is_fav = False
+        else:
+            favorites_list.append(filepath)
+            is_fav = True
     save_favorites()
     return is_fav
 
 def show_fav_toast(is_fav):
-    """お気に入り変更時の通知メッセージ表示"""
     global status_message
-    status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
+    with state_lock:
+        status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
     request_display_update(is_full_refresh=False)
     
     def _clear():
         time.sleep(1.5)
         global status_message
-        status_message = ""
+        with state_lock:
+            status_message = ""
         request_display_update(is_full_refresh=False)
     threading.Thread(target=_clear, daemon=True).start()
 
 def toggle_favorite_current_track():
-    if not playlist or current_track_idx >= len(playlist):
-        return False
-    return toggle_favorite_by_path(playlist[current_track_idx])
+    with state_lock:
+        if not playlist or current_track_idx >= len(playlist):
+            return False
+        path = playlist[current_track_idx]
+    return toggle_favorite_by_path(path)
 
 def save_resume_state():
-    if not playlist or current_track_idx >= len(playlist):
-        return
+    with state_lock:
+        if not playlist or current_track_idx >= len(playlist):
+            return
+        filepath = playlist[current_track_idx]
+        idx = current_track_idx
     try:
         data = {
-            "filepath": playlist[current_track_idx],
-            "track_idx": current_track_idx
+            "filepath": filepath,
+            "track_idx": idx
         }
         with open(RESUME_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -309,8 +311,9 @@ def load_resume_state():
             with open(RESUME_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 filepath = data.get("filepath")
-                if filepath and filepath in playlist:
-                    current_track_idx = playlist.index(filepath)
+                with state_lock:
+                    if filepath and filepath in playlist:
+                        current_track_idx = playlist.index(filepath)
         except Exception:
             pass
 
@@ -322,17 +325,22 @@ def reload_music_library():
         found_files.extend(glob.glob(os.path.join(MUSIC_DIR, "**", ext), recursive=True))
         found_files.extend(glob.glob(os.path.join(MUSIC_DIR, ext)))
 
-    playlist_original = sorted(list(set(found_files)))
-    playlist = list(playlist_original)
-    current_track_idx = 0
+    new_playlist_original = sorted(list(set(found_files)))
+    new_playlist = list(new_playlist_original)
 
-    albums_dict = {}
-    for filepath in playlist_original:
+    new_albums_dict = {}
+    for filepath in new_playlist_original:
         rel_dir = os.path.dirname(os.path.relpath(filepath, MUSIC_DIR))
         album_name = rel_dir if rel_dir else "シングル曲"
-        if album_name not in albums_dict:
-            albums_dict[album_name] = []
-        albums_dict[album_name].append(filepath)
+        if album_name not in new_albums_dict:
+            new_albums_dict[album_name] = []
+        new_albums_dict[album_name].append(filepath)
+
+    with state_lock:
+        playlist_original = new_playlist_original
+        playlist = new_playlist
+        albums_dict = new_albums_dict
+        current_track_idx = 0
 
 load_favorites()
 reload_music_library()
@@ -372,9 +380,6 @@ is_bt_scanning = False
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
 
-state_lock = threading.Lock()
-
-# イースターエッグ & EQ 関連変数
 easter_click_count = 0
 last_easter_click_time = 0.0
 is_clock_unlocked = False
@@ -388,8 +393,6 @@ def apply_eq_settings():
     bass = eq_values["BASS"]
     mid = eq_values["MID"]
     treble = eq_values["TREBLE"]
-
-    print(f"[EQ Apply] BASS: {bass}, MID: {mid}, TREBLE: {treble}")
 
     def db_to_pct(val):
         pct = int(66 + (val * 5.6))
@@ -702,13 +705,11 @@ def display_worker():
                 render_eq_screen(image, draw, epd.height, epd.width)
 
             elif scr == "PLAY":
-                # モード表示生成 ([1] / [ALL] / [SHUF] 等)
                 mode_str = ""
                 if repeat_mode == 1: mode_str += " [1]"
                 elif repeat_mode == 2: mode_str += " [ALL]"
                 if is_shuffle: mode_str += " [SHUF]"
 
-                # スリープタイマー表示生成
                 timer_str = ""
                 if sleep_timer_end_time > 0:
                     rem_sec = max(0, int(sleep_timer_end_time - time.time()))
@@ -813,7 +814,6 @@ def display_worker():
 
 threading.Thread(target=display_worker, daemon=True).start()
 
-# --- 定期更新スレッド ---
 def cat_clock_timer_thread():
     while True:
         time.sleep(10)
@@ -829,8 +829,9 @@ threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
-    connected_bt_mac = mac
-    status_message = f"接続中: {name[:10]}"
+    with state_lock:
+        connected_bt_mac = mac
+        status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
 
     if pygame.mixer.get_init():
@@ -839,7 +840,6 @@ def connect_bt_device(mac, name="Unknown"):
         except Exception:
             pass
 
-    # equal を挟まず、直接 bluealsa を plug でラップする
     config_content = f"""pcm.!default {{
     type plug
     slave.pcm {{
@@ -870,40 +870,39 @@ def connect_bt_device(mac, name="Unknown"):
     subprocess.run(["bluetoothctl", "pair", mac], check=False)
     time.sleep(2.0)
 
-    # Bluetooth接続コマンド実行
     subprocess.run(["bluetoothctl", "connect", mac], check=False)
-    
-    # A2DPストリームがOS側に認識されるまで少し待つ
     time.sleep(3.0)
 
-    # 接続確認
     if is_bt_connected(mac):
-        audio_output_mode = "BT"
+        with state_lock:
+            audio_output_mode = "BT"
         try:
             subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
         except Exception:
             pass
         
-        # 接続が完全に確立されてからオーディオ初期化
         safe_init_audio()
         apply_eq_settings()
-        status_message = "接続成功"
+        with state_lock:
+            status_message = "接続成功"
     else:
-        status_message = "接続失敗"
+        with state_lock:
+            status_message = "接続失敗"
 
     request_display_update(is_full_refresh=True)
     time.sleep(1.5)
-    status_message = ""
+    with state_lock:
+        status_message = ""
     update_menu_items()
     request_display_update(is_full_refresh=False)
 
 def set_audio_output(mode, mac=None):
     global audio_output_mode, status_message, connected_bt_mac
 
-    status_message = f"切替中: {mode}"
+    with state_lock:
+        status_message = f"切替中: {mode}"
     request_display_update(is_full_refresh=False)
 
-    # サービス切替前に必ず Pygame mixer を完全にシャットダウン
     if pygame.mixer.get_init():
         try:
             pygame.mixer.music.stop()
@@ -917,10 +916,12 @@ def set_audio_output(mode, mac=None):
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
         else:
-            status_message = "MAC未設定"
+            with state_lock:
+                status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
             time.sleep(1.0)
-            status_message = ""
+            with state_lock:
+                status_message = ""
 
     elif mode == "PWM":
         pwm_config = """pcm.!default {
@@ -934,13 +935,16 @@ def set_audio_output(mode, mac=None):
         except Exception as e:
             print(f"asoundrc write error: {e}")
 
-        audio_output_mode = "PWM"
+        with state_lock:
+            audio_output_mode = "PWM"
         safe_init_audio()
         apply_eq_settings()
-        status_message = "PWMモード設定"
+        with state_lock:
+            status_message = "PWMモード設定"
         request_display_update(is_full_refresh=True)
         time.sleep(1.0)
-        status_message = ""
+        with state_lock:
+            status_message = ""
         update_menu_items()
         request_display_update(is_full_refresh=False)
 
@@ -984,7 +988,8 @@ def toggle_ap_mode():
         is_active = get_ap_status()
         try:
             if is_active:
-                status_message = "AP OFF中..."
+                with state_lock:
+                    status_message = "AP OFF中..."
                 request_display_update(is_full_refresh=False)
 
                 subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
@@ -992,7 +997,8 @@ def toggle_ap_mode():
                 subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
 
             else:
-                status_message = "AP ON中..."
+                with state_lock:
+                    status_message = "AP ON中..."
                 request_display_update(is_full_refresh=False)
 
                 subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
@@ -1022,7 +1028,8 @@ bind-interfaces
             time.sleep(1)
             subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
 
-            status_message = ""
+            with state_lock:
+                status_message = ""
             update_menu_items()
             request_display_update(is_full_refresh=False)
 
@@ -1060,7 +1067,8 @@ def get_saved_wifi_ssids():
 def connect_to_wifi(ssid):
     def _do_connect():
         global status_message
-        status_message = f"接続中: {ssid}"
+        with state_lock:
+            status_message = f"接続中: {ssid}"
         request_display_update(is_full_refresh=False)
         try:
             subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
@@ -1077,7 +1085,8 @@ def connect_to_wifi(ssid):
                     subprocess.run(["sudo", "wpa_cli", "-i", "wlan0", "select_network", net_id])
         except Exception: pass
         time.sleep(3)
-        status_message = ""
+        with state_lock:
+            status_message = ""
         update_menu_items()
         request_display_update(is_full_refresh=False)
 
@@ -1120,7 +1129,6 @@ def get_track_artist_info(filepath):
 def format_time_str(seconds):
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
 
-# --- Bluetooth 区分処理 ---
 def get_bt_paired_devices():
     devs = []
     try:
@@ -1140,8 +1148,9 @@ def trigger_bt_scan():
     if is_bt_scanning: return
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
-        is_bt_scanning = True
-        status_message = "BT検索中(5秒)..."
+        with state_lock:
+            is_bt_scanning = True
+            status_message = "BT検索中(5秒)..."
         request_display_update(is_full_refresh=False)
         try:
             subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
@@ -1153,132 +1162,139 @@ def trigger_bt_scan():
                 parts = line.split(' ', 2)
                 if len(parts) >= 3 and parts[1] not in paired:
                     scanned.append((parts[1], parts[2].strip()))
-            bt_scanned_devices = scanned
+            with state_lock:
+                bt_scanned_devices = scanned
         except Exception: pass
-        is_bt_scanning = False
-        status_message = ""
+        with state_lock:
+            is_bt_scanning = False
+            status_message = ""
         update_menu_items()
         request_display_update(is_full_refresh=False)
     threading.Thread(target=_scan_thread, daemon=True).start()
 
 def update_menu_items(reset_cursor=True):
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids
-    if reset_cursor:
-        cursor_idx = 0
-        scroll_offset = 0
+    with state_lock:
+        if reset_cursor:
+            cursor_idx = 0
+            scroll_offset = 0
 
-    if current_screen == "MENU_TOP":
-        pct, _ = get_battery_info()
-        items = ["アルバム"]
-        if is_clock_unlocked:
-            items.append("時計画面")
-        items.extend([
-            "再生設定",
-            "接続設定",
-            "システム設定",
-            f"バッテリー: {pct}"
-        ])
-        menu_items = items
+        if current_screen == "MENU_TOP":
+            pct, _ = get_battery_info()
+            items = ["アルバム"]
+            if is_clock_unlocked:
+                items.append("時計画面")
+            items.extend([
+                "再生設定",
+                "接続設定",
+                "システム設定",
+                f"バッテリー: {pct}"
+            ])
+            menu_items = items
 
-    elif current_screen == "MENU_PLAY_SETTINGS":
-        rep_labels = ["OFF", "ONE", "ALL"]
-        items = [
-            "../ (戻る)",
-            f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
-            f"リピート: {rep_labels[repeat_mode]}",
-            "スリープタイマー"
-        ]
-        if is_eq_unlocked:
-            items.append("EQ設定")
-        menu_items = items
+        elif current_screen == "MENU_PLAY_SETTINGS":
+            rep_labels = ["OFF", "ONE", "ALL"]
+            items = [
+                "../ (戻る)",
+                f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
+                f"リピート: {rep_labels[repeat_mode]}",
+                "スリープタイマー"
+            ]
+            if is_eq_unlocked:
+                items.append("EQ設定")
+            menu_items = items
 
-    elif current_screen == "MENU_SLEEP":
-        menu_items = [
-            "../ (戻る)",
-            f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}",
-            f"15分 {'<--' if sleep_timer_minutes == 15 else ''}",
-            f"30分 {'<--' if sleep_timer_minutes == 30 else ''}",
-            f"60分 {'<--' if sleep_timer_minutes == 60 else ''}"
-        ]
+        elif current_screen == "MENU_SLEEP":
+            menu_items = [
+                "../ (戻る)",
+                f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}",
+                f"15分 {'<--' if sleep_timer_minutes == 15 else ''}",
+                f"30分 {'<--' if sleep_timer_minutes == 30 else ''}",
+                f"60分 {'<--' if sleep_timer_minutes == 60 else ''}"
+            ]
 
-    elif current_screen == "MENU_FAVS":
-        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
+        elif current_screen == "MENU_FAVS":
+            menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
 
-    elif current_screen == "MENU_CONN":
-        menu_items = [
-            "../ (戻る)",
-            "Wi-Fi設定",
-            "Bluetooth設定",
-            f"APモード: {'ON' if get_ap_status() else 'OFF'}"
-        ]
-    elif current_screen == "MENU_WIFI":
-        wifi_on, _ = get_rfkill_status()
-        saved_wifi_ssids = get_saved_wifi_ssids() if wifi_on else []
-        current_ssid = get_current_wifi_ssid() if wifi_on else None
+        elif current_screen == "MENU_CONN":
+            menu_items = [
+                "../ (戻る)",
+                "Wi-Fi設定",
+                "Bluetooth設定",
+                f"APモード: {'ON' if get_ap_status() else 'OFF'}"
+            ]
+        elif current_screen == "MENU_WIFI":
+            wifi_on, _ = get_rfkill_status()
+            saved_wifi_ssids = get_saved_wifi_ssids() if wifi_on else []
+            current_ssid = get_current_wifi_ssid() if wifi_on else None
 
-        items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_on else 'OFF'}"]
-        if wifi_on:
-            if saved_wifi_ssids:
-                for ssid in saved_wifi_ssids:
-                    connected_label = " (接続済)" if current_ssid and ssid == current_ssid else ""
-                    items.append(f"接続: {ssid}{connected_label}")
+            items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_on else 'OFF'}"]
+            if wifi_on:
+                if saved_wifi_ssids:
+                    for ssid in saved_wifi_ssids:
+                        connected_label = " (接続済)" if current_ssid and ssid == current_ssid else ""
+                        items.append(f"接続: {ssid}{connected_label}")
+                else:
+                    items.append("(記憶されたWi-Fiなし)")
             else:
-                items.append("(記憶されたWi-Fiなし)")
-        else:
-            items.append("(Wi-Fi OFF中)")
-        menu_items = items
+                items.append("(Wi-Fi OFF中)")
+            menu_items = items
 
-    elif current_screen == "MENU_BT":
-        _, bt_on = get_rfkill_status()
-        items = ["../ (戻る)", f"Bluetooth機能: {'ON' if bt_on else 'OFF'}", f"出力先: [{audio_output_mode}]"]
-        if bt_on:
-            items.extend(["登録済みデバイス", "新規デバイスの検索"])
-        else:
-            items.append("(Bluetooth OFF中)")
-        menu_items = items
+        elif current_screen == "MENU_BT":
+            _, bt_on = get_rfkill_status()
+            items = ["../ (戻る)", f"Bluetooth機能: {'ON' if bt_on else 'OFF'}", f"出力先: [{audio_output_mode}]"]
+            if bt_on:
+                items.extend(["登録済みデバイス", "新規デバイスの検索"])
+            else:
+                items.append("(Bluetooth OFF中)")
+            menu_items = items
 
-    elif current_screen == "MENU_BT_PAIRED":
-        bt_paired_devices = get_bt_paired_devices()
-        items = ["../ (戻る)"]
-        for mac, name in bt_paired_devices:
-            connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
-            items.append(f"接続: {name}{connected_label}")
-        menu_items = items
+        elif current_screen == "MENU_BT_PAIRED":
+            bt_paired_devices = get_bt_paired_devices()
+            items = ["../ (戻る)"]
+            for mac, name in bt_paired_devices:
+                connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
+                items.append(f"接続: {name}{connected_label}")
+            menu_items = items
 
-    elif current_screen == "MENU_BT_SCAN":
-        items = ["../ (戻る)", "検索開始"]
-        items.extend([f"ペアリング: {name}" for _, name in bt_scanned_devices])
-        menu_items = items
+        elif current_screen == "MENU_BT_SCAN":
+            items = ["../ (戻る)", "検索開始"]
+            items.extend([f"ペアリング: {name}" for _, name in bt_scanned_devices])
+            menu_items = items
 
-    elif current_screen == "MENU_SYS":
-        bt_codec = get_bt_codec_info()
-        menu_items = [
-            "../ (戻る)",
-            "曲ライブラリ再読み込み",
-            "GitHubから更新",
-            "アプリ再起動",
-            "ライセンス表示",
-            f"IP: {get_ip_address()}",
-            f"BTコーデック: {bt_codec}",
-            "再起動",
-            "シャットダウン"
-        ]
-    elif current_screen == "MENU_ALBUMS":
-        album_list = sorted(list(albums_dict.keys()))
-        menu_items = ["../ (戻る)", "[★ お気に入り]"] + [f"[{alb}]" for alb in album_list]
+        elif current_screen == "MENU_SYS":
+            bt_codec = get_bt_codec_info()
+            menu_items = [
+                "../ (戻る)",
+                "曲ライブラリ再読み込み",
+                "GitHubから更新",
+                "アプリ再起動",
+                "ライセンス表示",
+                f"IP: {get_ip_address()}",
+                f"BTコーデック: {bt_codec}",
+                "再起動",
+                "シャットダウン"
+            ]
+        elif current_screen == "MENU_ALBUMS":
+            album_list = sorted(list(albums_dict.keys()))
+            menu_items = ["../ (戻る)", "[★ お気に入り]"] + [f"[{alb}]" for alb in album_list]
 
-    elif current_screen == "MENU_TRACKS":
-        track_paths = albums_dict.get(selected_album, [])
-        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in track_paths]
+        elif current_screen == "MENU_TRACKS":
+            track_paths = albums_dict.get(selected_album, [])
+            menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in track_paths]
 
 def reset_inactivity_timer():
     global last_user_action_time
-    last_user_action_time = time.time()
+    with state_lock:
+        last_user_action_time = time.time()
     
 def play_current_track(full_refresh=False):
     global is_playing, total_duration_sec, track_paused_time, last_drawn_segment
     global start_time, paused_duration, pause_start_time
-    if playlist:
+    
+    with state_lock:
+        if not playlist or current_track_idx >= len(playlist):
+            return
         filepath = playlist[current_track_idx]
         total_duration_sec = get_track_duration_sec(filepath)
         track_paused_time = 0
@@ -1287,79 +1303,85 @@ def play_current_track(full_refresh=False):
         paused_duration = 0.0
         pause_start_time = 0.0
 
-        def _do_play():
-            global is_playing
-            try:
-                # safe_init_audio() 等でmixerが再初期化中の場合は少し待つ
-                retry = 0
-                while not pygame.mixer.get_init() and retry < 10:
-                    time.sleep(0.2)
-                    retry += 1
+    def _do_play():
+        global is_playing
+        try:
+            retry = 0
+            while not pygame.mixer.get_init() and retry < 10:
+                time.sleep(0.2)
+                retry += 1
 
-                if not pygame.mixer.get_init():
-                    print("[SKIP] Cannot play: mixer not initialized")
+            if not pygame.mixer.get_init():
+                print("[SKIP] Cannot play: mixer not initialized")
+                with state_lock:
                     is_playing = False
-                    return
+                return
 
-                pygame.mixer.music.load(filepath)
-                pygame.mixer.music.play()
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+            with state_lock:
                 is_playing = True
-                save_resume_state()
-            except Exception as e:
-                print(f"Play error: {e}")
-                is_playing = False # エラー時は確実に再生停止状態に戻す
+            save_resume_state()
+        except Exception as e:
+            print(f"Play error: {e}")
+            with state_lock:
+                is_playing = False
 
-        # 再生処理を別スレッドで実行（画面フリーズを回避）
-        threading.Thread(target=_do_play, daemon=True).start()
-
-        # UI（画面）は待たずに即座に更新リクエストを飛ばす
-        request_display_update(is_full_refresh=full_refresh)
+    threading.Thread(target=_do_play, daemon=True).start()
+    request_display_update(is_full_refresh=full_refresh)
 
 def toggle_shuffle():
     global is_shuffle, playlist, current_track_idx
-    is_shuffle = not is_shuffle
-    current_song = playlist[current_track_idx] if playlist else None
-    playlist = random.sample(playlist_original, len(playlist_original)) if is_shuffle else list(playlist_original)
-    if current_song and current_song in playlist:
-        current_track_idx = playlist.index(current_song)
+    with state_lock:
+        is_shuffle = not is_shuffle
+        current_song = playlist[current_track_idx] if playlist else None
+        playlist = random.sample(playlist_original, len(playlist_original)) if is_shuffle else list(playlist_original)
+        if current_song and current_song in playlist:
+            current_track_idx = playlist.index(current_song)
+        else:
+            current_track_idx = 0
 
 def toggle_repeat():
     global repeat_mode
-    repeat_mode = (repeat_mode + 1) % 3
+    with state_lock:
+        repeat_mode = (repeat_mode + 1) % 3
 
 def set_sleep_timer(mins):
     global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
-    sleep_timer_minutes = mins
-    sleep_timer_pending = False
-    if mins > 0:
-        sleep_timer_end_time = time.time() + (mins * 60)
-    else:
-        sleep_timer_end_time = 0.0
+    with state_lock:
+        sleep_timer_minutes = mins
+        sleep_timer_pending = False
+        if mins > 0:
+            sleep_timer_end_time = time.time() + (mins * 60)
+        else:
+            sleep_timer_end_time = 0.0
 
 def exit_cat_clock_if_needed():
     global current_screen
-    if current_screen == "CAT_CLOCK":
-        current_screen = "PLAY"
-        request_display_update(is_full_refresh=True)
-        return True
+    with state_lock:
+        if current_screen == "CAT_CLOCK":
+            current_screen = "PLAY"
+            request_display_update(is_full_refresh=True)
+            return True
     return False
 
 def check_easter_egg_trigger():
     global easter_click_count, last_easter_click_time, current_screen, is_clock_unlocked, is_eq_unlocked
     now = time.time()
-    if now - last_easter_click_time > 3.0:
-        easter_click_count = 0
+    with state_lock:
+        if now - last_easter_click_time > 3.0:
+            easter_click_count = 0
 
-    easter_click_count += 1
-    last_easter_click_time = now
+        easter_click_count += 1
+        last_easter_click_time = now
 
-    if easter_click_count >= 5:
-        easter_click_count = 0
-        is_clock_unlocked = True
-        is_eq_unlocked = True
-        current_screen = "CAT_CLOCK"
-        request_display_update(is_full_refresh=True)
-        return True
+        if easter_click_count >= 5:
+            easter_click_count = 0
+            is_clock_unlocked = True
+            is_eq_unlocked = True
+            current_screen = "CAT_CLOCK"
+            request_display_update(is_full_refresh=True)
+            return True
     return False
 
 # --- 9. ボタンイベントハンドラ ---
@@ -1384,8 +1406,9 @@ def on_btn_menu_or_select():
             request_display_update(is_full_refresh=True)
             return
 
-        if exit_cat_clock_if_needed(): return
+    if exit_cat_clock_if_needed(): return
 
+    with state_lock:
         if current_screen == "PLAY":
             current_screen = "MENU_TOP"
             update_menu_items(reset_cursor=True)
@@ -1528,7 +1551,7 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=True)
                     else:
                         album_list = sorted(list(albums_dict.keys()))
-                        chosen_idx = cursor_idx - 2  # 0番目: "../", 1番目: "[★ お気に入り]"
+                        chosen_idx = cursor_idx - 2
                         if 0 <= chosen_idx < len(album_list):
                             selected_album = album_list[chosen_idx]
                             current_screen = "MENU_TRACKS"
@@ -1550,7 +1573,6 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=False)
 
                     elif selected == "GitHubから更新":
-                        # epd.sleep() を呼ばないようにテキストだけ描画して更新
                         try:
                             epd.init()
                             img = Image.new('1', (epd.height, epd.width), 255)
@@ -1581,7 +1603,8 @@ def on_btn_menu_or_select():
                             def _clear_status():
                                 time.sleep(3.0)
                                 global status_message
-                                status_message = ""
+                                with state_lock:
+                                    status_message = ""
                                 request_display_update(is_full_refresh=False)
                             threading.Thread(target=_clear_status, daemon=True).start()
                     elif selected == "アプリ再起動":
@@ -1610,8 +1633,9 @@ def on_btn_play_or_back():
             request_display_update(is_full_refresh=True)
             return
 
-        if exit_cat_clock_if_needed(): return
+    if exit_cat_clock_if_needed(): return
 
+    with state_lock:
         if current_screen == "PLAY":
             if is_playing:
                 pause_start_time = time.time()
@@ -1683,21 +1707,18 @@ def on_btn_prev():
     with state_lock:
         reset_inactivity_timer()
         
-        # 1. EQ画面の場合
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. アルバムの曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
         elif current_screen == "MENU_TRACKS":
             track_paths = albums_dict.get(selected_album, [])
-            chosen_idx = cursor_idx - 1  # 0番目は "../ (戻る)"
+            chosen_idx = cursor_idx - 1
             if 0 <= chosen_idx < len(track_paths):
                 target_path = track_paths[chosen_idx]
                 is_fav = toggle_favorite_by_path(target_path)
                 show_fav_toast(is_fav)
 
-        # 3. 通常再生時などの曲戻し動作
         elif playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
@@ -1706,7 +1727,6 @@ def on_btn_prev():
                 play_current_track(full_refresh=True)
 
 def handle_next_btn_press():
-    """NEXTボタンの通常押し (曲送り / EQカーソル移動)"""
     global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
@@ -1720,7 +1740,6 @@ def handle_next_btn_press():
 def on_btn_next():
     if not debounce("btn_next"): return
     if exit_cat_clock_if_needed(): return
-    # スレッドを介さず直接実行でも問題ありませんが、既存の構造に合わせて呼び出します
     threading.Thread(target=handle_next_btn_press, daemon=True).start()
 
 # --- 10. GPIO割り当て ---
@@ -1742,14 +1761,14 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
-    # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
-    if playlist:
-        filepath = playlist[current_track_idx]
-        total_duration_sec = get_track_duration_sec(filepath)
-        try:
-            pygame.mixer.music.load(filepath)
-        except Exception as e:
-            print(f"Resume load error: {e}")
+    with state_lock:
+        if playlist:
+            filepath = playlist[current_track_idx]
+            total_duration_sec = get_track_duration_sec(filepath)
+            try:
+                pygame.mixer.music.load(filepath)
+            except Exception as e:
+                print(f"Resume load error: {e}")
 
     request_display_update(is_full_refresh=True)
 
@@ -1757,7 +1776,6 @@ try:
         time.sleep(0.2)
         now = time.time()
 
-        # 1. 状態計算
         with state_lock:
             cur_sec = get_current_sec()
 
@@ -1773,16 +1791,15 @@ try:
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
-        # 2. スリープタイマー監視
         if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
-            sleep_timer_pending = True
-            sleep_timer_end_time = 0.0
+            with state_lock:
+                sleep_timer_pending = True
+                sleep_timer_end_time = 0.0
 
         if sleep_timer_pending and not is_playing:
             clean_shutdown_display("Sleep Timer Off...")
             subprocess.run(["sudo", "shutdown", "-h", "now"])
 
-        # 3. 曲の再生・終了監視（cur_sec 定義後に実行）
         if is_playing:
             music_busy = pygame.mixer.music.get_busy()
             
@@ -1792,18 +1809,19 @@ try:
                     subprocess.run(["sudo", "shutdown", "-h", "now"])
                 
                 elif playlist:
-                    if repeat_mode == 1:
-                        play_current_track(full_refresh=True)
-                    elif repeat_mode == 2:
-                        current_track_idx = (current_track_idx + 1) % len(playlist)
-                        play_current_track(full_refresh=True)
-                    else:
-                        if current_track_idx < len(playlist) - 1:
-                            current_track_idx += 1
+                    with state_lock:
+                        if repeat_mode == 1:
+                            play_current_track(full_refresh=True)
+                        elif repeat_mode == 2:
+                            current_track_idx = (current_track_idx + 1) % len(playlist)
                             play_current_track(full_refresh=True)
                         else:
-                            is_playing = False
-                            request_display_update(is_full_refresh=False)
+                            if current_track_idx < len(playlist) - 1:
+                                current_track_idx += 1
+                                play_current_track(full_refresh=True)
+                            else:
+                                is_playing = False
+                                request_display_update(is_full_refresh=False)
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
