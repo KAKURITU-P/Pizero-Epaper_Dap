@@ -1650,7 +1650,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 9]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 10]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
@@ -1821,13 +1821,16 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
-    # 修正: 起動時は mixer.music.load を行わず、曲の長さの取得のみにする
+    # 起動時は前回のレジューム曲情報をセットする
     with state_lock:
         if playlist:
             filepath = playlist[current_track_idx]
             total_duration_sec = get_track_duration_sec(filepath)
 
     request_display_update(is_full_refresh=True)
+
+    # 起動直後の誤爆を防ぐためのカウンター
+    init_grace_count = 0
 
     while True:
         time.sleep(0.2)
@@ -1858,11 +1861,20 @@ try:
             clean_shutdown_display("Sleep Timer Off...")
             subprocess.run(["sudo", "shutdown", "-h", "now"])
 
-        # 3. 曲の再生・終了監視（cur_sec 定義後に実行）
+        # 3. 曲の再生・終了監視
         if is_playing:
             music_busy = pygame.mixer.music.get_busy()
             
-            if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
+            # 再生開始直後は Pygame の準備ができるまで数周（約0.6秒）終了判定を猶予する
+            if not music_busy:
+                init_grace_count += 1
+            else:
+                init_grace_count = 0
+
+            # 準備猶予期間（猶予3回=0.6秒）を過ぎても音が鳴っていない、または曲の長さを超えた場合のみ終了とみなす
+            if (not music_busy and init_grace_count > 3) or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
+                init_grace_count = 0  # カウンターリセット
+                
                 if sleep_timer_pending:
                     clean_shutdown_display("Sleep Timer Off...")
                     subprocess.run(["sudo", "shutdown", "-h", "now"])
@@ -1880,6 +1892,10 @@ try:
                         else:
                             is_playing = False
                             request_display_update(is_full_refresh=False)
+        else:
+            init_grace_count = 0  # 再生停止中はカウンターをクリアしておく
+
+
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
