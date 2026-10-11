@@ -586,7 +586,8 @@ def render_cat_clock(image, draw, width, height):
         ship_img, mask = get_cropped_ship(idx, target_h)
         if ship_img and mask:
             pos_y = (sea_level - 1) - ship_img.height
-            image.paste(ship_img, (pos_y), mask)
+            # 修正: X座標 (pos_x) と Y座標 (pos_y) をタプルで渡すように修正
+            image.paste(ship_img, (pos_x, pos_y), mask)
             has_drawn = True
 
     if not has_drawn:
@@ -1749,15 +1750,11 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
 try:
+    # 修正: 起動時は mixer.music.load を行わず、曲の長さの取得のみにする
     with state_lock:
         if playlist:
-            # 起動時はロードのみ行い、インデックスを進めない
             filepath = playlist[current_track_idx]
             total_duration_sec = get_track_duration_sec(filepath)
-            try:
-                pygame.mixer.music.load(filepath)
-            except Exception as e:
-                print(f"Resume load error: {e}")
 
     request_display_update(is_full_refresh=True)
 
