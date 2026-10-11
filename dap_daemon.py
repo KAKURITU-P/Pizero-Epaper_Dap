@@ -927,6 +927,10 @@ def set_audio_output(mode, mac=None):
         time.sleep(0.5)
 
     if mode == "BT":
+        # ★【完全排他】BT運用を開始するため、まずWi-Fiを徹底的に殺す
+        subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+        time.sleep(0.2)
+
         target_mac = mac or connected_bt_mac
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
@@ -949,6 +953,11 @@ def set_audio_output(mode, mac=None):
             print(f"asoundrc write error: {e}")
 
         audio_output_mode = "PWM"
+        
+        # ★【完全排他】PWMに戻すときは、開発・通信用にWi-Fiの封印を解く
+        subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+        time.sleep(0.2)
+
         safe_init_audio()
         apply_eq_settings()
         status_message = "PWMモード設定"
@@ -957,6 +966,7 @@ def set_audio_output(mode, mac=None):
         status_message = ""
         update_menu_items()
         request_display_update(is_full_refresh=False)
+
 
 # --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
@@ -974,12 +984,27 @@ def get_rfkill_status():
                 elif current_type == "bt": bt_enabled = False
     except Exception: pass
     return wifi_enabled, bt_enabled
-
 def toggle_rfkill(dev_type):
     wifi_on, bt_on = get_rfkill_status()
-    target = "wlan" if dev_type == "wifi" else "bluetooth"
+    
+    # 1. まず、本来トグルがすべきアクション（block か unblock か）を決める
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
+    target = "wlan" if dev_type == "wifi" else "bluetooth"
+    
+    # 2. 完全排他制御：これから【ON（unblock）】にする場合の道連れ処理
+    if action == "unblock":
+        if dev_type == "wifi":
+            # Wi-FiをONにするなら、BTとその心臓(bluealsa)を完全に殺す
+            subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+            subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+            time.sleep(0.2)
+        elif dev_type == "bt":
+            # BluetoothをONにするなら、パニックの元凶であるWi-Fiを完全に殺す
+            subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+            time.sleep(0.2)
+            
+    # 3. 本来のON/OFFコマンドを実行する（元のロジック通り）
     try:
         subprocess.run(["sudo", "rfkill", action, target], check=False)
         time.sleep(0.3)
@@ -1594,14 +1619,29 @@ def on_btn_menu_or_select():
                         def _update_and_restart():
                             try:
                                 repo_dir = "/home/pi/dap"
+                                # 1. 【排他】Git通信をするため、一時的にBTとオーディオ関連を完全停止
+                                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+                                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+                                
+                                # 2. Wi-Fiを起動して電波を掴むまで5秒待つ
+                                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+                                time.sleep(5.0)  
+                                
+                                # 3. いつも通りのGit更新処理
                                 subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
                                 subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
                             except Exception as e:
                                 print(f"Git update failed: {e}")
+                            finally:
+                                # 4. 更新終了後、20秒の限界が来る前にWi-Fiを即座に完全遮断
+                                subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                                time.sleep(0.5)
                             
+                            # 5. アプリを再起動して新しいコードを反映
                             subprocess.run(["sudo", "systemctl", "restart", "dap"])
 
                         threading.Thread(target=_update_and_restart, daemon=True).start()
+
 
                     elif selected == "ライセンス表示":
                         if check_easter_egg_trigger():
@@ -1610,7 +1650,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 8]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 9]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
