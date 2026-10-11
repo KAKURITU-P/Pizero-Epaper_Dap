@@ -771,6 +771,7 @@ def display_worker():
                 if scr == "MENU_SYS": header_text = "メニュー > システム設定"
                 elif scr == "MENU_ALBUMS": header_text = "メニュー > アルバム"
                 elif scr == "MENU_FAVS": header_text = "アルバム > お気に入り"
+                elif scr == "MENU_HISTORY": header_text = "アルバム > 再生履歴"  # ← ここを追加！
                 elif scr == "MENU_TRACKS": header_text = truncate_by_width(f"アルバム > {sel_alb}", font_main, 230) if sel_alb else "アルバム"
                 elif scr == "MENU_PLAY_SETTINGS": header_text = "メニュー > 再生設定"
                 elif scr == "MENU_BT": header_text = "接続設定 > Bluetooth"
@@ -1609,7 +1610,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.0.3-beta6]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 7]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
