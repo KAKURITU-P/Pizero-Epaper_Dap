@@ -1043,7 +1043,7 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """描画の割り込みを封じたため、これで100%確実にON/OFFが効くようになる純粋トグル"""
+    """OSの自動復旧機能を NetworkManager コマンドで強制制圧する決定版トグル"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
@@ -1051,11 +1051,19 @@ def toggle_rfkill(dev_type):
     target = "wifi" if dev_type == "wifi" else "bluetooth"
     
     try:
+        if dev_type == "wifi":
+            if currently_on:
+                # ★Wi-Fiを「OFF」にする時：rfkillだけでなく、NetworkManagerの大元から無線を強制消灯する
+                subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
+            else:
+                # ★Wi-Fiを「ON」にする時：NetworkManagerの大元の無線をONにする
+                subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
+        
+        # 本来の rfkill コマンドも保険として実行
         subprocess.run(["sudo", "rfkill", action, target], check=False)
         time.sleep(0.3)
-    except Exception:
-        pass
-
+    except Exception as e:
+        print(f"[toggle_rfkill] Error: {e}")
 
 def get_ap_status():
     try:
@@ -1735,7 +1743,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 8]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 9]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
