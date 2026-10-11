@@ -460,29 +460,46 @@ def debounce(btn_name):
     return True
 
 def get_ip_address():
+    # ★安全装置: そもそもWi-Fi機能がOFF（block）なら即座に返す
+    wifi_on, _ = get_rfkill_status()
+    if not wifi_on:
+        return "未接続 (WiFi OFF)"
+
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # ソケット通信自体にも一応1秒のタイムアウトを設定
+        s.settimeout(1.0)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
     except Exception:
         try:
-            res = subprocess.check_output(["ip", "addr", "show", "wlan0"], text=True)
+            # timeout=1.0 を追加
+            res = subprocess.check_output(["ip", "addr", "show", "wlan0"], text=True, timeout=1.0)
             for line in res.splitlines():
                 if "inet " in line:
                     return line.strip().split()[1].split('/')[0]
+        except subprocess.TimeoutExpired:
+            print("[WiFi Info] IP address fetch timeout")
         except Exception:
             pass
         return "未接続"
+
 
 def get_bt_codec_info():
     if audio_output_mode != "BT":
         return "PWM出力中"
     
+    # そもそもBluetooth機能自体がOFF（block）なら即座に返す
+    _, bt_on = get_rfkill_status()
+    if not bt_on:
+        return "BT機能 OFF中"
+    
     mac_path_part = connected_bt_mac.replace(":", "_").lower()
     pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dp"
     
+    # D-Bus経由でのコーデック取得（タイムアウトを1秒に制限）
     try:
         cmd = [
             "gdbus", "call", "--system",
@@ -491,34 +508,51 @@ def get_bt_codec_info():
             "--method", "org.freedesktop.DBus.Properties.Get",
             "org.bluealsa.PCM", "Codec"
         ]
-        res = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, errors="ignore")
+        # timeout=1.0 を追加して、1秒以上応答がなければ強制的に次へ進む
+        res = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=1.0, errors="ignore")
         if "'" in res:
             codec = res.split("'")[1]
             return codec.upper()
+    except subprocess.TimeoutExpired:
+        print("[BT Info] Codec fetch timeout (gdbus)")
     except Exception:
         pass
 
+    # bluetoothctlでの接続確認（タイムアウトを1.2秒に制限）
     try:
-        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, stderr=subprocess.DEVNULL, errors="ignore")
+        cmd_bt = ["bluetoothctl", "info", connected_bt_mac]
+        res = subprocess.check_output(cmd_bt, text=True, stderr=subprocess.DEVNULL, timeout=1.2, errors="ignore")
         if "Connected: yes" in res:
             for line in res.splitlines():
                 if "Name:" in line:
                     return line.split(":", 1)[1].strip()
             return "A2DP接続"
+    except subprocess.TimeoutExpired:
+        print("[BT Info] Connection check timeout (bluetoothctl)")
     except Exception:
         pass
 
     return "未接続"
 
+
 def get_current_wifi_ssid():
+    # ★安全装置: そもそもWi-Fi機能がOFF（block）ならコマンドを叩かず即座に返す
+    wifi_on, _ = get_rfkill_status()
+    if not wifi_on:
+        return None
+
     try:
-        res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
+        # timeout=1.0 を追加
+        res = subprocess.check_output(["iwgetid", "-r"], text=True, timeout=1.0, errors='ignore')
         ssid = res.strip()
         if ssid:
             return ssid
+    except subprocess.TimeoutExpired:
+        print("[WiFi Info] SSID fetch timeout")
     except Exception:
         pass
     return None
+
 
 def is_bt_connected(mac):
     if not mac:
@@ -1071,19 +1105,28 @@ bind-interfaces
     threading.Thread(target=_do_toggle, daemon=True).start()
 
 def get_saved_wifi_ssids():
+    # ★安全装置: そもそもWi-Fi機能がOFFならコマンドを叩かず空リストを返す
+    wifi_on, _ = get_rfkill_status()
+    if not wifi_on:
+        return []
+
     ssids = []
     try:
-        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], text=True)
+        # timeout=1.5 を追加
+        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], text=True, timeout=1.5)
         for line in res.strip().splitlines():
             if ":" in line:
                 name, conn_type = line.split(":", 1)
                 if conn_type == "802-11-wireless" and name != "Pi-DAP-AP":
                     ssids.append(name)
+    except subprocess.TimeoutExpired:
+        print("[WiFi Info] Saved SSIDs fetch timeout (nmcli)")
     except Exception:
         pass
 
     try:
-        res = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True)
+        # timeout=1.0 を追加
+        res = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True, timeout=1.0)
         lines = res.strip().splitlines()[1:]
         for line in lines:
             parts = line.strip().split()
@@ -1091,10 +1134,13 @@ def get_saved_wifi_ssids():
                 ssid_name = parts[1]
                 if ssid_name not in ["any", "ssid"] and ssid_name != "Pi-DAP-AP":
                     ssids.append(ssid_name)
+    except subprocess.TimeoutExpired:
+        print("[WiFi Info] Saved SSIDs fetch timeout (wpa_cli)")
     except Exception:
         pass
 
     return list(set(ssids))
+
 
 def connect_to_wifi(ssid):
     def _do_connect():
