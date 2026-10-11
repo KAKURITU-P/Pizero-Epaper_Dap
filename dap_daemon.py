@@ -18,6 +18,9 @@ import pygame
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
+import gc
+
+
 
 sys.path.append("/home/pi/dap")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -699,6 +702,11 @@ def render_eq_screen(image, draw, width, height):
 display_queue = queue.Queue()
 pending_full_refresh = False
 
+# ★ここに以下の2行を追加！(起動時に1回だけメモリを確保する)
+global_image = Image.new('1', (epd2in13.EPD_HEIGHT, epd2in13.EPD_WIDTH), 255)
+global_draw = ImageDraw.Draw(global_image)
+
+
 def request_display_update(is_full_refresh=False):
     global pending_full_refresh
     with display_queue.mutex:
@@ -738,9 +746,10 @@ def display_worker():
 
                 current_sec = get_current_sec()
                 tot_sec = total_duration_sec
-
-            image = Image.new('1', (epd.height, epd.width), 255)
-            draw = ImageDraw.Draw(image)
+            # ★毎回新規確保せず、既存のメモリを白で塗りつぶして再利用する
+            global_draw.rectangle([0, 0, epd.height, epd.width], fill=255)
+            image = global_image
+            draw = global_draw
 
             if scr == "CAT_CLOCK":
                 render_cat_clock(image, draw, epd.height, epd.width)
@@ -854,6 +863,8 @@ def display_worker():
                 partial_refresh_count += 1
 
             display_queue.task_done()
+
+            gc.collect() 
         except Exception as e:
             print(f"Display render error: {e}")
             current_epd_mode = None
@@ -1003,19 +1014,18 @@ def set_audio_output(mode, mac=None):
 
 
 # --- 8. Bluetooth / Wi-Fi / AP 関連 ---
+# --- 8. Bluetooth / Wi-Fi / AP 関連 ---
 def get_rfkill_status():
+    """LinuxのsysfsからWi-FiとBTのblock状態を直接読み込み、メモリとCPU負荷を激減させる"""
     wifi_enabled, bt_enabled = True, True
     try:
-        res = subprocess.check_output(["sudo", "rfkill", "list"], text=True)
-        current_type = None
-        for line in res.splitlines():
-            line_lower = line.lower()
-            if "wlan" in line_lower or "wireless" in line_lower: current_type = "wifi"
-            elif "bluetooth" in line_lower: current_type = "bt"
-
-            if "soft blocked: yes" in line_lower:
-                if current_type == "wifi": wifi_enabled = False
-                elif current_type == "bt": bt_enabled = False
+        # /sys/class/rfkill/ の中身をファイル直読み (1はblock、0はunblock)
+        if os.path.exists("/sys/class/rfkill/rfkill0/soft"):
+            with open("/sys/class/rfkill/rfkill0/soft", "r") as f:
+                if f.read().strip() == "1": wifi_enabled = False
+        if os.path.exists("/sys/class/rfkill/rfkill1/soft"):
+            with open("/sys/class/rfkill/rfkill1/soft", "r") as f:
+                if f.read().strip() == "1": bt_enabled = False
     except Exception: pass
     return wifi_enabled, bt_enabled
 def toggle_rfkill(dev_type):
@@ -1713,7 +1723,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 1]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
@@ -1896,7 +1906,7 @@ try:
     init_grace_count = 0
 
     while True:
-        time.sleep(0.2)
+        time.sleep(0.5)
         now = time.time()
 
         # 1. 状態計算
