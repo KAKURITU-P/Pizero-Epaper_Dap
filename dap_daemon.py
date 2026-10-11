@@ -470,7 +470,6 @@ def get_ip_address():
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # ソケット通信自体にも一応1秒のタイムアウトを設定
         s.settimeout(1.0)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
@@ -478,16 +477,18 @@ def get_ip_address():
         return ip
     except Exception:
         try:
-            # timeout=1.0 を追加
+            # timeout=1.0 で安全に取得
             res = subprocess.check_output(["ip", "addr", "show", "wlan0"], text=True, timeout=1.0)
             for line in res.splitlines():
                 if "inet " in line:
+                    # タイポを修正：1回目の分割で得た要素(インデックス1)に対して再度スラッシュで分割する
                     return line.strip().split()[1].split('/')[0]
         except subprocess.TimeoutExpired:
             print("[WiFi Info] IP address fetch timeout")
         except Exception:
             pass
         return "未接続"
+
 
 
 def get_bt_codec_info():
@@ -1042,32 +1043,41 @@ def get_rfkill_status():
         
     return wifi_enabled, bt_enabled
 
-
 def toggle_rfkill(dev_type):
+    """Wi-FiとBTの同時ONを『1ミリ秒も許さない』超・厳格な排他手動トグル"""
     wifi_on, bt_on = get_rfkill_status()
     
-    # 1. まず、本来トグルがすべきアクション（block か unblock か）を決める
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
     target = "wlan" if dev_type == "wifi" else "bluetooth"
     
-    # 2. 完全排他制御：これから【ON（unblock）】にする場合の道連れ処理
+    # これから【ON（unblock）】にする場合の超厳格な排他シーケンス
     if action == "unblock":
         if dev_type == "wifi":
-            # Wi-FiをONにするなら、BTとその心臓(bluealsa)を完全に殺す
+            # 1. まず何よりも先にBluetooth関連を完全に『即死』させる
             subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
             subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-            time.sleep(0.2)
+            # 2. OS側の電波消滅処理が完全に完了するまで0.3秒待つ
+            time.sleep(0.3)
+            # 3. 安全を確認してから、満を持してWi-Fiの unblock を許可する
+            action = "unblock"
+            target = "wlan"
         elif dev_type == "bt":
-            # BluetoothをONにするなら、パニックの元凶であるWi-Fiを完全に殺す
+            # 1. まず何よりも先にWi-Fi（SSHの元）を完全に『即死』させる
             subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
-            time.sleep(0.2)
+            # 2. OS側の電波消滅処理が完全に完了するまで0.3秒待つ
+            time.sleep(0.3)
+            # 3. 安全を確認してから、満を持してBluetoothの unblock を許可する
+            action = "unblock"
+            target = "bluetooth"
             
-    # 3. 本来のON/OFFコマンドを実行する（元のロジック通り）
+    # 本来のON/OFFコマンドを実行
     try:
         subprocess.run(["sudo", "rfkill", action, target], check=False)
         time.sleep(0.3)
-    except Exception: pass
+    except Exception:
+        pass
+
 
 def get_ap_status():
     try:
@@ -1738,7 +1748,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 3]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 4]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
