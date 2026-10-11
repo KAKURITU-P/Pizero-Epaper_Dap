@@ -491,12 +491,10 @@ def get_ip_address():
         return "未接続"
 
 
-
 def get_bt_codec_info():
     if audio_output_mode != "BT":
         return "PWM出力中"
     
-    # そもそもBluetooth機能自体がOFF（block）なら即座に返す
     _, bt_on = get_rfkill_status()
     if not bt_on:
         return "BT機能 OFF中"
@@ -504,7 +502,6 @@ def get_bt_codec_info():
     mac_path_part = connected_bt_mac.replace(":", "_").lower()
     pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dp"
     
-    # D-Bus経由でのコーデック取得（タイムアウトを1秒に制限）
     try:
         cmd = [
             "gdbus", "call", "--system",
@@ -513,7 +510,6 @@ def get_bt_codec_info():
             "--method", "org.freedesktop.DBus.Properties.Get",
             "org.bluealsa.PCM", "Codec"
         ]
-        # timeout=1.0 を追加して、1秒以上応答がなければ強制的に次へ進む
         res = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=1.0, errors="ignore")
         if "'" in res:
             codec = res.split("'")[1]
@@ -523,7 +519,6 @@ def get_bt_codec_info():
     except Exception:
         pass
 
-    # bluetoothctlでの接続確認（タイムアウトを1.2秒に制限）
     try:
         cmd_bt = ["bluetoothctl", "info", connected_bt_mac]
         res = subprocess.check_output(cmd_bt, text=True, stderr=subprocess.DEVNULL, timeout=1.2, errors="ignore")
@@ -541,13 +536,15 @@ def get_bt_codec_info():
 
 
 def get_current_wifi_ssid():
-    # ★安全装置: そもそもWi-Fi機能がOFF（block）ならコマンドを叩かず即座に返す
+    # ★超強力安全装置: そもそも時計画面(CAT_CLOCK)以外のメニュー画面の時はコマンドを一切叩かない
+    if current_screen not in ["PLAY", "CAT_CLOCK"]:
+        return None
+
     wifi_on, _ = get_rfkill_status()
     if not wifi_on:
         return None
 
     try:
-        # timeout=1.0 を追加
         res = subprocess.check_output(["iwgetid", "-r"], text=True, timeout=1.0, errors='ignore')
         ssid = res.strip()
         if ssid:
@@ -557,6 +554,7 @@ def get_current_wifi_ssid():
     except Exception:
         pass
     return None
+
 
 
 def is_bt_connected(mac):
@@ -1045,52 +1043,19 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """自動再接続のループをへし折り、手動トグルを100%確実に機能させる排他コード"""
+    """描画の割り込みを封じたため、これで100%確実にON/OFFが効くようになる純粋トグル"""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
     action = "block" if currently_on else "unblock"
     target = "wifi" if dev_type == "wifi" else "bluetooth"
     
-    # 1. これから【ON（unblock）】にする場合の排他シーケンス
-    if action == "unblock":
-        if dev_type == "wifi":
-            # Bluetooth関連を完全に『即死』させる
-            subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-            subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-            time.sleep(0.3)
-            
-            # Wi-Fiを安全に起動
-            subprocess.run(["sudo", "rfkill", "unblock", "wifi"], check=False)
-            # ★NetworkManagerにWi-Fiデバイスの再稼働と自動接続を許可する
-            subprocess.run(["sudo", "nmcli", "device", "connect", "wlan0"], check=False)
-            action = "unblock"
-            target = "wifi"
-            
-        elif dev_type == "bt":
-            # Wi-Fiを完全に『即死』させる
-            # ★最優先: OSが勝手にルーターに再接続を繰り返すループをここで強制切断する
-            subprocess.run(["sudo", "nmcli", "device", "disconnect", "wlan0"], check=False)
-            time.sleep(0.2)
-            # その後、電波を完全に遮断する
-            subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
-            time.sleep(0.3)
-            action = "unblock"
-            target = "bluetooth"
-
-    # 2. これから【OFF（block）】にする場合（Wi-Fi単体をOFFる時）
-    elif action == "block" and dev_type == "wifi":
-        # ★OSの自動再接続機能を黙らせてから、安全にOFFにする
-        subprocess.run(["sudo", "nmcli", "device", "disconnect", "wlan0"], check=False)
-        time.sleep(0.2)
-        subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
-            
-    # 3. 本来のON/OFFコマンドを実行
     try:
         subprocess.run(["sudo", "rfkill", action, target], check=False)
         time.sleep(0.3)
     except Exception:
         pass
+
 
 def get_ap_status():
     try:
