@@ -1610,7 +1610,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 7]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.0.3 - [beta 8]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
@@ -1651,10 +1651,14 @@ def on_btn_play_or_back():
             if is_playing:
                 pause_start_time = time.time()
                 track_paused_time = get_current_sec()
-                try: pygame.mixer.music.pause()
+                try: 
+                    pygame.mixer.music.set_volume(0.0) # ★一旦音量を完全にゼロにする
+                    time.sleep(0.05)                   # ★50ミリ秒だけ待ってドライバーの処理を落ち着かせる
+                    pygame.mixer.music.pause()
                 except Exception: pass
                 is_playing = False
                 request_display_update(is_full_refresh=False)
+
             else:
                 if pause_start_time > 0:
                     paused_duration += (time.time() - pause_start_time)
