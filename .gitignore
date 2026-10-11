@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 waveshare_epd/
 favorites.json
+resume.json
