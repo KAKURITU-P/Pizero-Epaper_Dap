@@ -1027,6 +1027,10 @@ def get_rfkill_status():
         if os.path.exists("/sys/class/rfkill/rfkill1/soft"):
             with open("/sys/class/rfkill/rfkill1/soft", "r") as f:
                 if f.read().strip() == "1": bt_enabled = False
+    except Exception:
+        pass
+    return wifi_enabled, bt_enabled
+
 def toggle_rfkill(dev_type):
     wifi_on, bt_on = get_rfkill_status()
     
