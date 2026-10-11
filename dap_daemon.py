@@ -230,6 +230,7 @@ albums_dict = {}
 selected_album = None
 current_track_idx = 0
 favorites_list = []
+history_list = []
 
 # リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
 repeat_mode = 0
@@ -290,12 +291,21 @@ def toggle_favorite_current_track():
     return toggle_favorite_by_path(playlist[current_track_idx])
 
 def save_resume_state():
+    global history_list
     if not playlist or current_track_idx >= len(playlist):
         return
     try:
+        current_path = playlist[current_track_idx]
+        if current_path in history_list:
+            history_list.remove(current_path)
+        history_list.insert(0, current_path)
+        if len(history_list) > 20:
+            history_list[:] = history_list[:20]
+
         data = {
-            "filepath": playlist[current_track_idx],
-            "track_idx": current_track_idx
+            "filepath": current_path,
+            "track_idx": current_track_idx,
+            "history": history_list
         }
         with open(RESUME_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -303,12 +313,13 @@ def save_resume_state():
         print(f"Resume save error: {e}")
 
 def load_resume_state():
-    global current_track_idx
+    global current_track_idx, history_list
     if os.path.exists(RESUME_FILE):
         try:
             with open(RESUME_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 filepath = data.get("filepath")
+                history_list = data.get("history", [])
                 if filepath and filepath in playlist:
                     current_track_idx = playlist.index(filepath)
         except Exception:
@@ -1206,6 +1217,9 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_FAVS":
         menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
 
+    elif current_screen == "MENU_HISTORY": # 追加
+        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in history_list]
+
     elif current_screen == "MENU_CONN":
         menu_items = [
             "../ (戻る)",
@@ -1265,9 +1279,9 @@ def update_menu_items(reset_cursor=True):
             "再起動",
             "シャットダウン"
         ]
-    elif current_screen == "MENU_ALBUMS":
+    elif current_screen == "MENU_ALBUMS":    
         album_list = sorted(list(albums_dict.keys()))
-        menu_items = ["../ (戻る)", "[★ お気に入り]"] + [f"[{alb}]" for alb in album_list]
+        menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [f"[{alb}]" for alb in album_list]
 
     elif current_screen == "MENU_TRACKS":
         track_paths = albums_dict.get(selected_album, [])
@@ -1400,7 +1414,7 @@ def on_btn_menu_or_select():
                     if current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]: current_screen = "MENU_TOP"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
-                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS"]: current_screen = "MENU_ALBUMS"
+                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS" # MENU_HISTORY を追加
                     elif current_screen == "MENU_SLEEP": current_screen = "MENU_PLAY_SETTINGS"
                     else: current_screen = "MENU_TOP"
                     update_menu_items(reset_cursor=True)
@@ -1528,14 +1542,26 @@ def on_btn_menu_or_select():
                         current_screen = "MENU_FAVS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
+                    elif selected == "[再生履歴]":
+                        current_screen = "MENU_HISTORY"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
                     else:
                         album_list = sorted(list(albums_dict.keys()))
-                        chosen_idx = cursor_idx - 2  # 0番目: "../", 1番目: "[★ お気に入り]"
+                        chosen_idx = cursor_idx - 3  # 項目が3つ（../, お気に入り, 再生履歴）になったため -3 に変更
                         if 0 <= chosen_idx < len(album_list):
                             selected_album = album_list[chosen_idx]
                             current_screen = "MENU_TRACKS"
                             update_menu_items(reset_cursor=True)
                             request_display_update(is_full_refresh=True)
+
+                elif current_screen == "MENU_HISTORY": # 追加
+                    chosen_idx = cursor_idx - 1
+                    if 0 <= chosen_idx < len(history_list):
+                        playlist = history_list
+                        current_track_idx = chosen_idx
+                        play_current_track(full_refresh=True)
+                        current_screen = "PLAY"
 
                 elif current_screen == "MENU_TRACKS":
                     track_paths = albums_dict.get(selected_album, [])
