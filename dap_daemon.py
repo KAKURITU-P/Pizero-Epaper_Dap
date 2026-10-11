@@ -1020,14 +1020,13 @@ def get_rfkill_status():
     wifi_enabled, bt_enabled = True, True
     try:
         # /sys/class/rfkill/ の中身をファイル直読み (1はblock、0はunblock)
+        # with open を使うことで、読み終わった瞬間にメモリとファイル資源を100%確実に解放します
         if os.path.exists("/sys/class/rfkill/rfkill0/soft"):
             with open("/sys/class/rfkill/rfkill0/soft", "r") as f:
                 if f.read().strip() == "1": wifi_enabled = False
         if os.path.exists("/sys/class/rfkill/rfkill1/soft"):
             with open("/sys/class/rfkill/rfkill1/soft", "r") as f:
                 if f.read().strip() == "1": bt_enabled = False
-    except Exception: pass
-    return wifi_enabled, bt_enabled
 def toggle_rfkill(dev_type):
     wifi_on, bt_on = get_rfkill_status()
     
@@ -1723,7 +1722,7 @@ def on_btn_menu_or_select():
                             request_display_update(is_full_refresh=True)
                         else:
                             # 通常のライセンス表示
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 1]]"
+                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[Version 1.1.0 - [beta 2]]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
