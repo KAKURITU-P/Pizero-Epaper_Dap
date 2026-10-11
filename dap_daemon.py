@@ -110,7 +110,7 @@ def safe_init_audio():
             os.environ['SDL_AUDIODRIVER'] = 'alsa'
 
             if audio_output_mode == "BT":
-                buf_size = 4096
+                buf_size = 2048
                 init_success = False
                 # BlueALSA PCM が作成されるまで最大5回リトライ
                 for i in range(5):
