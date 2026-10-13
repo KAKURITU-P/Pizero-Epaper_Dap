@@ -812,12 +812,10 @@ def _github_update_worker():
 
         _set_github_update_status("更新しました。再起動します")
         time.sleep(1.5)
-        restarted = subprocess.run(
-            ["sudo", "systemctl", "restart", "dap.service"],
-            text=True, capture_output=True, timeout=30, env=env
-        )
-        if restarted.returncode != 0:
-            raise RuntimeError((restarted.stderr or "アプリの再起動に失敗しました").strip()[-180:])
+        # Restart this service process in place. Calling systemctl restart from
+        # inside the unit can kill this worker/command during the stop phase,
+        # and sudo may prompt for a password with no terminal available.
+        os.execv(sys.executable, [sys.executable, os.path.join(BASE_DIR, "dap_daemon.py")])
     except Exception as e:
         print(f"GitHub update error: {e}")
         _set_github_update_status(f"更新失敗: {str(e)[:42]}", clear_after=8)
