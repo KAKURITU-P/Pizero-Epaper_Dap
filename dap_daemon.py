@@ -68,6 +68,7 @@ if os.path.exists(asoundrc_path):
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
+        subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
         subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
         subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
         time.sleep(1.0)
@@ -75,6 +76,14 @@ if os.path.exists(asoundrc_path):
         audio_output_mode = "PWM"
 else:
     audio_output_mode = "PWM"
+
+# Keep the combo radio in one mode at boot. The Pi Zero W shares radio resources.
+if audio_output_mode == "BT":
+    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+else:
+    subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+    subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+    # Preserve the configured Wi-Fi state in PWM mode.
 
 # --- ALSA Cライブラリ読み込み ---
 try:
@@ -999,7 +1008,9 @@ def set_audio_output(mode, mac=None):
 
         audio_output_mode = "PWM"
         
-        # ★【完全排他】PWMに戻すときは、開発・通信用にWi-Fiの封印を解く
+        # Stop BT before enabling Wi-Fi to keep the radios mutually exclusive.
+        subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
         subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
         time.sleep(0.2)
 
@@ -1081,18 +1092,20 @@ def toggle_ap_mode():
                 status_message = "AP OFF中..."
                 request_display_update(is_full_refresh=False)
 
-                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
                 subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
 
             else:
                 status_message = "AP ON中..."
                 request_display_update(is_full_refresh=False)
 
+                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
                 subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "wpa_supplicant"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
 
                 subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
                 subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
@@ -1246,6 +1259,16 @@ def trigger_bt_scan():
     if is_bt_scanning: return
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
+        # Do not enable Bluetooth scanning while Wi-Fi is carrying a connection.
+        wifi_on, _ = get_rfkill_status()
+        if wifi_on:
+            status_message = "Wi-Fi使用中はBT検索を停止"
+            request_display_update(is_full_refresh=False)
+            time.sleep(1.0)
+            status_message = ""
+            request_display_update(is_full_refresh=False)
+            return
+
         is_bt_scanning = True
         status_message = "BT検索中(5秒)..."
         request_display_update(is_full_refresh=False)
@@ -1694,45 +1717,15 @@ def on_btn_menu_or_select():
                             img = Image.new('1', (epd.height, epd.width), 255)
                             draw = ImageDraw.Draw(img)
                             draw.rectangle([0, 0, epd.height, epd.width], fill=255)
-                            draw.text((20, (epd.width // 2) - 10), "Updating from GitHub...", font=font_title, fill=0)
+                            draw.text((20, (epd.width // 2) - 10), "Auto update disabled", font=font_title, fill=0)
                             epd.display(epd.getbuffer(img))
                             time.sleep(0.5)
                         except Exception:
                             pass
                         
-                        def _update_and_restart():
-                            try:
-                                repo_dir = "/home/pi/dap"
-                                # 1. 【完全排他】通信を始めるため、まずBluetoothを徹底的に眠らせる
-                                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-                                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-                                
-                                # 2. 機械レベルで眠らせていた Wi-Fi を叩き起こす（物理リンクUP）
-                                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-                                subprocess.run(["sudo", "rfkill", "unblock", "wifi"], check=False)
-                                subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
-                                
-                                # 3. ルーターの電波を掴んでIPアドレスを再取得するまで「5秒」だけ待つ
-                                time.sleep(5.0)  
-                                
-                                # 4. いつも通りのGit更新処理（一瞬で完了します）
-                                subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
-                                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
-                            except Exception as e:
-                                print(f"Git update failed: {e}")
-                            finally:
-                                # 5. 成功・失敗に関わらず、20秒の自爆タイマーが鳴る前に即座にWi-Fiを物理DOWN（完全封印）
-                                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-                                subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-                                subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
-                                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False) # ★物理DOWN
-                                subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
-                                time.sleep(0.5)
-                            
-                            # 6. アプリを再起動して最新のコードを反映
-                            subprocess.run(["sudo", "systemctl", "restart", "dap"])
+                        status_message = "安全のため自動更新は停止中"
 
-                        threading.Thread(target=_update_and_restart, daemon=True).start()
+                        request_display_update(is_full_refresh=False)
 
 
 
