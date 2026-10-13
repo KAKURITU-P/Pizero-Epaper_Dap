@@ -848,7 +848,7 @@ def display_worker():
                 is_full = pending_full_refresh
                 pending_full_refresh = False
 
-            if partial_refresh_count >= 5:
+            if partial_refresh_count >= 10:
                 is_full = True
                 partial_refresh_count = 0
 
