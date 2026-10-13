@@ -576,7 +576,7 @@ def get_bt_device_properties(mac):
     for line in res.splitlines():
         if ":" in line:
             key, value = line.strip().split(":", 1)
-            properties[key.strip()] = value.strip().lower()
+            properties[key.strip().lower()] = value.strip().lower()
     return properties
 
 def get_cropped_ship(ship_index, target_height):
@@ -1050,22 +1050,37 @@ def connect_bt_device(mac, name="Unknown"):
             print(f"bluetoothctl {' '.join(args)}: {e}")
             return None
 
+    def run_btctl_session(commands, timeout=40):
+        """エージェントを維持した同一bluetoothctlセッションでコマンドを実行する。"""
+        try:
+            result = subprocess.run(
+                ["bluetoothctl"],
+                input="\n".join([*commands, "quit"]) + "\n",
+                capture_output=True, text=True, errors="ignore",
+                timeout=timeout, check=False
+            )
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            if result.returncode != 0 or "failed" in output.lower():
+                print(f"bluetoothctl session: {output or '失敗'}")
+            return result
+        except Exception as e:
+            print(f"bluetoothctl session: {e}")
+            return None
+
     run_btctl("power", "on")
-    run_btctl("agent", "on")
-    run_btctl("default-agent")
 
     properties = get_bt_device_properties(mac)
-    if properties.get("Paired") != "yes":
-        # BlueZで新規機器だけペアリングする。既存ペアリングへの再実行は解除を伴う。
+    if properties.get("paired") != "yes":
+        # 新規機器だけを、agentが有効な同一セッション内でペアリングする。
         run_btctl("--timeout", "5", "scan", "on", timeout=8)
-        run_btctl("pair", mac, timeout=35)
+        run_btctl_session(["agent NoInputNoOutput", "default-agent", f"pair {mac}"], timeout=40)
         properties = get_bt_device_properties(mac)
 
-    paired = properties.get("Paired") == "yes"
-    if paired and properties.get("Trusted") != "yes":
+    paired = properties.get("paired") == "yes"
+    if paired and properties.get("trusted") != "yes":
         run_btctl("trust", mac)
 
-    if paired and get_bt_device_properties(mac).get("Connected") != "yes":
+    if paired and get_bt_device_properties(mac).get("connected") != "yes":
         run_btctl("connect", mac, timeout=25)
 
     deadline = time.monotonic() + 12
@@ -1386,17 +1401,29 @@ def format_time_str(seconds):
 
 # --- Bluetooth 区分処理 ---
 def get_bt_paired_devices():
-    devs = []
-    try:
-        res = subprocess.check_output(["bluetoothctl", "paired-devices"], text=True, errors='ignore')
-        for line in res.strip().splitlines():
-            parts = line.split(' ', 2)
-            if len(parts) >= 3:
-                devs.append((parts[1], parts[2].strip()))
-    except Exception: pass
+    devices = {}
+    for command in (["bluetoothctl", "devices", "Paired"], ["bluetoothctl", "paired-devices"]):
+        try:
+            res = subprocess.check_output(
+                command, text=True, errors="ignore", timeout=8
+            )
+        except Exception:
+            continue
 
-    if not devs and connected_bt_mac:
-        devs.append((connected_bt_mac, "Default Device"))
+        for line in res.splitlines():
+            parts = line.strip().split(" ", 2)
+            if len(parts) >= 2 and parts[0] == "Device":
+                mac = parts[1]
+                if re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", mac):
+                    devices[mac] = parts[2].strip() if len(parts) == 3 else ""
+        if devices:
+            break
+
+    devs = []
+    for mac, listed_name in devices.items():
+        properties = get_bt_device_properties(mac)
+        name = properties.get("alias") or properties.get("name") or listed_name or mac
+        devs.append((mac, name))
     return devs
 
 def trigger_bt_scan():
@@ -1512,9 +1539,12 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_BT_PAIRED":
         bt_paired_devices = get_bt_paired_devices()
         items = ["../ (戻る)"]
-        for mac, name in bt_paired_devices:
-            connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
-            items.append(f"接続: {name}{connected_label}")
+        if bt_paired_devices:
+            for mac, name in bt_paired_devices:
+                connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
+                items.append(f"接続: {name}{connected_label}")
+        else:
+            items.append("(登録済み機器なし)")
         menu_items = items
 
     elif current_screen == "MENU_BT_SCAN":
