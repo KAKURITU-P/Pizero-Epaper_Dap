@@ -19,8 +19,10 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
 
-sys.path.append("/home/pi/dap")
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+for _path in (BASE_DIR, "/home/pi/dap"):
+    if _path and _path not in sys.path:
+        sys.path.append(_path)
 
 # --- バッテリー情報取得関数 ---
 def get_battery_info():
@@ -1024,11 +1026,11 @@ def toggle_ap_mode():
                 time.sleep(0.5)
 
                 dnsmasq_conf = """interface=wlan0
-dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
-dhcp-option=option:router,192.168.4.1
-dhcp-option=option:dns-server,192.168.4.1
-bind-interfaces
-"""
+                dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
+                dhcp-option=option:router,192.168.4.1
+                dhcp-option=option:dns-server,192.168.4.1
+                bind-interfaces
+                """
                 with open("/tmp/dnsmasq_ap.conf", "w") as f:
                     f.write(dnsmasq_conf)
 
@@ -1731,6 +1733,35 @@ btn_next.when_pressed        = on_btn_next
 btn_play_back.when_pressed   = on_btn_play_or_back
 
 # --- 11. メインループ ---
+def handle_track_completion():
+    global is_playing, current_track_idx
+
+    if sleep_timer_pending:
+        clean_shutdown_display("Sleep Timer Off...")
+        subprocess.run(["sudo", "shutdown", "-h", "now"])
+        return
+
+    if not playlist:
+        is_playing = False
+        request_display_update(is_full_refresh=False)
+        return
+
+    if repeat_mode == 1:
+        play_current_track(full_refresh=True)
+        return
+
+    if repeat_mode == 2:
+        current_track_idx = (current_track_idx + 1) % len(playlist)
+        play_current_track(full_refresh=True)
+        return
+
+    if current_track_idx < len(playlist) - 1:
+        current_track_idx += 1
+        play_current_track(full_refresh=True)
+    else:
+        is_playing = False
+        request_display_update(is_full_refresh=False)
+
 try:
     # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
     if playlist:
@@ -1760,29 +1791,12 @@ try:
 
         # --- 曲の再生・終了監視 ---
         if is_playing:
+            with state_lock:
+                cur_sec = get_current_sec()
             music_busy = pygame.mixer.music.get_busy()
-            
-            # 曲が終了したか判定
+
             if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
-                # ★ タイマー待機フラグが立っていれば、曲が終わったこの瞬間でシャットダウン
-                if sleep_timer_pending:
-                    clean_shutdown_display("Sleep Timer Off...")
-                    subprocess.run(["sudo", "shutdown", "-h", "now"])
-                
-                # 通常の曲送り処理
-                elif playlist:
-                    if repeat_mode == 1:
-                        play_current_track(full_refresh=True)
-                    elif repeat_mode == 2:
-                        current_track_idx = (current_track_idx + 1) % len(playlist)
-                        play_current_track(full_refresh=True)
-                    else:
-                        if current_track_idx < len(playlist) - 1:
-                            current_track_idx += 1
-                            play_current_track(full_refresh=True)
-                        else:
-                            is_playing = False
-                            request_display_update(is_full_refresh=False)
+                handle_track_completion()
 
         with state_lock:
             cur_sec = get_current_sec()
@@ -1798,25 +1812,6 @@ try:
             if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ"] and (now - last_user_action_time > 10):
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
-
-            # 曲終了時の自動遷移 ＆ リピート処理
-            if is_playing:
-                music_busy = pygame.mixer.music.get_busy()
-                
-                if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
-                    if playlist:
-                        if repeat_mode == 1:  # 1曲リピート
-                            play_current_track(full_refresh=True)
-                        elif repeat_mode == 2:  # 全曲リピート
-                            current_track_idx = (current_track_idx + 1) % len(playlist)
-                            play_current_track(full_refresh=True)
-                        else:  # リピートOFF
-                            if current_track_idx < len(playlist) - 1:
-                                current_track_idx += 1
-                                play_current_track(full_refresh=True)
-                            else:
-                                is_playing = False
-                                request_display_update(is_full_refresh=False)
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
