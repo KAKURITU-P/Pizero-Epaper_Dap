@@ -37,7 +37,16 @@ else
     echo "Waveshareドライバー未配置のためスキップしました。配置後にPATCHERを実行してください。"
 fi
 
-echo "=== 5. systemd サービス設定 ==="
+echo "=== 5. DAPサービス用の制限付きsudo設定 ==="
+SUDOERS_SETUP="/home/pi/dap/tools/configure_dap_sudoers.sh"
+if [ -f "$SUDOERS_SETUP" ]; then
+    sudo bash "$SUDOERS_SETUP"
+else
+    echo "sudoers設定スクリプトが見つかりません: $SUDOERS_SETUP"
+    exit 1
+fi
+
+echo "=== 6. systemd サービス設定 ==="
 if [ -f /home/pi/dap/dap.service ]; then
     sudo cp /home/pi/dap/dap.service /etc/systemd/system/dap.service
     sudo systemctl daemon-reload

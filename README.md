@@ -133,3 +133,13 @@ python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/wavesh
 ```
 
 この設定は、画面基板がGPIO18のPWR制御なしで動作することを前提とします。
+
+### DAP操作時のsudoパスワード
+
+`setup.sh` は、DAPサービスが使用する無線切替・BlueALSA制御・アプリ再起動などに限り、パスワードなしでsudoを実行できる設定を `/etc/sudoers.d/dap` に追加します。SSHでの一般的な管理コマンド（パッケージ更新など）には引き続きパスワードが必要です。既存環境では次を一度実行してください。
+
+```bash
+sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh
+```
+
+GitHub更新では、更新処理の前に画面の全画面更新を要求します。全画面更新時にドライバーがパネルのRSTを動作させてからBUSY状態を確認します。BUSYは入力信号のため、ソフトウェアから直接解除はできません。配線や接触不良がある場合は、接続の確認も必要です。
