@@ -24,6 +24,23 @@ for _path in (BASE_DIR, "/home/pi/dap"):
     if _path and _path not in sys.path:
         sys.path.append(_path)
 
+def get_git_short_hash():
+    """Return the running checkout's short commit ID, if Git metadata exists."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", BASE_DIR, "rev-parse", "--short=7", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+        commit = result.stdout.strip()
+        if re.fullmatch(r"[0-9a-fA-F]{7,12}", commit):
+            return commit
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "local"
+
 # --- バッテリー情報取得関数 ---
 def get_battery_info():
     """バッテリーの % と V を取得"""
@@ -1863,7 +1880,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = "MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.0]"
+                            status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.0 {get_git_short_hash()}]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
