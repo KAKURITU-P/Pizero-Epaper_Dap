@@ -28,7 +28,16 @@ pip3 install mutagen || pip3 install mutagen --break-system-packages
 echo "=== 3. 音楽ディレクトリの作成 ==="
 mkdir -p ~/music
 
-echo "=== 4. systemd サービス設定 ==="
+echo "=== 4. Waveshare EPD のGPIO18電源操作を無効化 ==="
+EPD_CONFIG="/home/pi/dap/waveshare_epd/epdconfig.py"
+PATCHER="/home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py"
+if [ -f "$EPD_CONFIG" ] && [ -f "$PATCHER" ]; then
+    python3 "$PATCHER" "$EPD_CONFIG"
+else
+    echo "Waveshareドライバー未配置のためスキップしました。配置後にPATCHERを実行してください。"
+fi
+
+echo "=== 5. systemd サービス設定 ==="
 if [ -f /home/pi/dap/dap.service ]; then
     sudo cp /home/pi/dap/dap.service /etc/systemd/system/dap.service
     sudo systemctl daemon-reload

@@ -122,3 +122,13 @@ sudo systemctl start dap.service
 
 本プロジェクトのソースコードは [MIT License](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/blob/main/LICENSE.md) のもとで公開されています。
 
+
+### GPIO18 とPWM音声を併用する場合
+
+GPIO18/19をPWM音声出力に割り当てる構成では、WaveshareドライバーがGPIO18をPWR制御に使わないようにします。`setup.sh` は `/home/pi/dap/waveshare_epd/epdconfig.py` が存在する場合に、追跡対象の `tools/patch_waveshare_epd_gpio18_pwr.py` を適用します。ドライバーを後から配置した場合は次を実行してください。
+
+```bash
+python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/waveshare_epd/epdconfig.py
+```
+
+この設定は、画面基板がGPIO18のPWR制御なしで動作することを前提とします。

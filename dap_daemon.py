@@ -632,6 +632,7 @@ def render_eq_screen(image, draw, width, height):
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
 pending_full_refresh = False
+github_update_in_progress = False
 
 def request_display_update(is_full_refresh=False):
     global pending_full_refresh
@@ -641,10 +642,106 @@ def request_display_update(is_full_refresh=False):
         display_queue.queue.clear()
     display_queue.put(True)
 
+def _set_github_update_status(message, clear_after=None):
+    global status_message
+    with state_lock:
+        status_message = message
+    request_display_update(is_full_refresh=False)
+
+    if clear_after is not None:
+        def _clear_status():
+            time.sleep(clear_after)
+            global status_message
+            with state_lock:
+                if status_message == message:
+                    status_message = ""
+            request_display_update(is_full_refresh=False)
+        threading.Thread(target=_clear_status, daemon=True).start()
+
+
+def _github_update_worker():
+    global github_update_in_progress
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def run_git(args, timeout=120):
+        return subprocess.run(
+            ["git", "-C", BASE_DIR, *args],
+            text=True, capture_output=True, timeout=timeout, env=env
+        )
+
+    try:
+        remote = run_git(["remote", "get-url", "origin"], timeout=15)
+        if remote.returncode != 0:
+            raise RuntimeError("GitHubの接続先を確認できません")
+        remote_url = remote.stdout.strip().lower().removesuffix(".git")
+        if "github.com/kakuritu-p/pizero-epaper_dap" not in remote_url:
+            raise RuntimeError("登録されたGitHub接続先が想定と異なるため中止しました")
+
+        fetched = run_git(["fetch", "--quiet", "origin", "main"])
+        if fetched.returncode != 0:
+            raise RuntimeError((fetched.stderr or "取得に失敗しました").strip()[-180:])
+
+        head = run_git(["rev-parse", "HEAD"], timeout=15)
+        target = run_git(["rev-parse", "FETCH_HEAD"], timeout=15)
+        if head.returncode != 0 or target.returncode != 0:
+            raise RuntimeError("更新対象の版を確認できません")
+        if head.stdout.strip() == target.stdout.strip():
+            _set_github_update_status("GitHubは最新です", clear_after=4)
+            return
+
+        already_contains_main = run_git([
+            "merge-base", "--is-ancestor", target.stdout.strip(), "HEAD"
+        ], timeout=15)
+        if already_contains_main.returncode == 0:
+            _set_github_update_status("GitHubは最新です", clear_after=4)
+            return
+
+        merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
+        if merged.returncode != 0:
+            detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
+            raise RuntimeError(detail)
+
+        patch_script = os.path.join(BASE_DIR, "tools", "patch_waveshare_epd_gpio18_pwr.py")
+        epdconfig_path = os.path.join(BASE_DIR, "waveshare_epd", "epdconfig.py")
+        if os.path.isfile(patch_script) and os.path.isfile(epdconfig_path):
+            patched = subprocess.run(
+                [sys.executable, patch_script, epdconfig_path],
+                text=True, capture_output=True, timeout=15, env=env
+            )
+            if patched.returncode != 0:
+                raise RuntimeError((patched.stderr or patched.stdout or "画面ドライバーを更新できません").strip()[-180:])
+
+        _set_github_update_status("更新しました。再起動します")
+        time.sleep(1.5)
+        restarted = subprocess.run(
+            ["sudo", "systemctl", "restart", "dap.service"],
+            text=True, capture_output=True, timeout=30, env=env
+        )
+        if restarted.returncode != 0:
+            raise RuntimeError((restarted.stderr or "アプリの再起動に失敗しました").strip()[-180:])
+    except Exception as e:
+        print(f"GitHub update error: {e}")
+        _set_github_update_status(f"更新失敗: {str(e)[:42]}", clear_after=8)
+    finally:
+        github_update_in_progress = False
+
+
+def start_github_update():
+    global github_update_in_progress, status_message
+    if github_update_in_progress:
+        return
+    github_update_in_progress = True
+    status_message = "GitHubから更新を確認中..."
+    request_display_update(is_full_refresh=False)
+    threading.Thread(target=_github_update_worker, daemon=True).start()
+
+
 def display_worker():
     global pending_full_refresh
     current_epd_mode = None
     partial_refresh_count = 0
+    previous_screen = None
 
     while True:
         try:
@@ -654,7 +751,7 @@ def display_worker():
                 is_full = pending_full_refresh
                 pending_full_refresh = False
 
-            if partial_refresh_count >= 30:
+            if partial_refresh_count >= 5:
                 is_full = True
                 partial_refresh_count = 0
 
@@ -672,6 +769,11 @@ def display_worker():
 
                 current_sec = get_current_sec()
                 tot_sec = total_duration_sec
+
+            # 画面種別が変わるたび全画面更新し、前画面の残像を消す。
+            if scr != previous_screen:
+                is_full = True
+                partial_refresh_count = 0
 
             image = Image.new('1', (epd.height, epd.width), 255)
             draw = ImageDraw.Draw(image)
@@ -788,6 +890,7 @@ def display_worker():
                 epd.displayPartial(buf)
                 partial_refresh_count += 1
 
+            previous_screen = scr
             display_queue.task_done()
         except Exception as e:
             print(f"Display render error: {e}")
@@ -1281,6 +1384,7 @@ def update_menu_items(reset_cursor=True):
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
+            "GitHubから更新",
             "アプリ再起動",
             "ライセンス表示",
             f"IP: {get_ip_address()}",
@@ -1555,6 +1659,9 @@ def on_btn_menu_or_select():
                     if selected == "曲ライブラリ再読み込み":
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
+
+                    elif selected == "GitHubから更新":
+                        start_github_update()
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
