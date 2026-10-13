@@ -897,6 +897,15 @@ threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
+    wifi_on, _ = get_rfkill_status()
+    if wifi_on:
+        status_message = "Wi-Fi使用中はBT接続を停止"
+        request_display_update(is_full_refresh=False)
+        time.sleep(1.0)
+        status_message = ""
+        request_display_update(is_full_refresh=False)
+        return
+
     connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
@@ -1054,25 +1063,35 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """OSの自動復旧機能を NetworkManager コマンドで強制制圧する決定版トグル"""
+    """Toggle one radio while refusing to enable both combo-chip radios together."""
     wifi_on, bt_on = get_rfkill_status()
     
     currently_on = wifi_on if dev_type == "wifi" else bt_on
-    action = "block" if currently_on else "unblock"
-    target = "wifi" if dev_type == "wifi" else "bluetooth"
     
     try:
         if dev_type == "wifi":
             if currently_on:
-                # ★Wi-Fiを「OFF」にする時：rfkillだけでなく、NetworkManagerの大元から無線を強制消灯する
                 subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"], check=False)
+                subprocess.run(["sudo", "rfkill", "block", "wifi"], check=False)
             else:
-                # ★Wi-Fiを「ON」にする時：NetworkManagerの大元の無線をONにする
+                if bt_on:
+                    status_message = "先にBluetoothをOFFにしてください"
+                    request_display_update(is_full_refresh=False)
+                    return
                 subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"], check=False)
-        
-        # 本来の rfkill コマンドも保険として実行
-        subprocess.run(["sudo", "rfkill", action, target], check=False)
+                subprocess.run(["sudo", "rfkill", "unblock", "wifi"], check=False)
+        else:
+            if currently_on:
+                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+            else:
+                if wifi_on:
+                    status_message = "先にWi-FiをOFFにしてください"
+                    request_display_update(is_full_refresh=False)
+                    return
+                subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
         time.sleep(0.3)
+        status_message = ""
     except Exception as e:
         print(f"[toggle_rfkill] Error: {e}")
 
