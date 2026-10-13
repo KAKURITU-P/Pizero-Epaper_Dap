@@ -204,6 +204,8 @@ MUSIC_DIR = os.path.expanduser("~/music")
 DATA_DIR = "/home/pi/dap"
 FAV_FILE = os.path.join(DATA_DIR, "favorites.json")
 RESUME_FILE = os.path.join(DATA_DIR, "resume.json")
+PLAY_DATA_FILE = os.path.join(DATA_DIR, "play_data.json")
+PLAYBACK_HISTORY_LIMIT = 30
 
 if not os.path.exists(MUSIC_DIR):
     os.makedirs(MUSIC_DIR, exist_ok=True)
@@ -216,6 +218,7 @@ albums_dict = {}
 selected_album = None
 current_track_idx = 0
 favorites_list = []
+playback_history = []
 
 # リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
 repeat_mode = 0
@@ -240,6 +243,63 @@ def save_favorites():
             json.dump(favorites_list, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Fav save error: {e}")
+
+def load_playback_history():
+    global playback_history
+    try:
+        with open(PLAY_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            history = data.get("history", [])
+            if not isinstance(history, list):
+                history = []
+            playback_history = [path for path in history if isinstance(path, str)]
+            last_played = data.get("last_played")
+            if isinstance(last_played, str) and last_played not in playback_history:
+                playback_history.insert(0, last_played)
+            playback_history = playback_history[:PLAYBACK_HISTORY_LIMIT]
+    except FileNotFoundError:
+        playback_history = []
+    except Exception as e:
+        playback_history = []
+        print(f"Playback history load error: {e}")
+
+def save_playback_history():
+    temp_file = PLAY_DATA_FILE + ".tmp"
+    try:
+        data = {}
+        if os.path.exists(PLAY_DATA_FILE):
+            with open(PLAY_DATA_FILE, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+            if not isinstance(existing_data, dict):
+                raise ValueError("play_data.json must contain a JSON object")
+            data = existing_data
+        data["history"] = playback_history
+        if playback_history:
+            data["last_played"] = playback_history[0]
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_file, PLAY_DATA_FILE)
+    except Exception as e:
+        print(f"Playback history save error: {e}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass
+
+def get_available_playback_history():
+    return [path for path in playback_history if os.path.isfile(path)]
+
+def record_playback_history(filepath):
+    """再生した曲を新しい順で保存し、同じ曲の重複を避ける"""
+    global playback_history
+    updated = [filepath] + [path for path in playback_history if path != filepath]
+    updated = updated[:PLAYBACK_HISTORY_LIMIT]
+    if updated != playback_history:
+        playback_history = updated
+        save_playback_history()
 
 # --- お気に入り追加・削除のヘルパー関数 ---
 def toggle_favorite_by_path(filepath):
@@ -319,6 +379,7 @@ def reload_music_library():
 
 load_favorites()
 reload_music_library()
+load_playback_history()
 load_resume_state()
 
 is_playing = False
@@ -843,6 +904,7 @@ def display_worker():
                 if scr == "MENU_SYS": header_text = "メニュー > システム設定"
                 elif scr == "MENU_ALBUMS": header_text = "メニュー > アルバム"
                 elif scr == "MENU_FAVS": header_text = "アルバム > お気に入り"
+                elif scr == "MENU_HISTORY": header_text = "アルバム > 再生履歴"
                 elif scr == "MENU_TRACKS": header_text = truncate_by_width(f"アルバム > {sel_alb}", font_main, 230) if sel_alb else "アルバム"
                 elif scr == "MENU_PLAY_SETTINGS": header_text = "メニュー > 再生設定"
                 elif scr == "MENU_BT": header_text = "接続設定 > Bluetooth"
@@ -1333,6 +1395,10 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_FAVS":
         menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
 
+    elif current_screen == "MENU_HISTORY":
+        history_paths = get_available_playback_history()
+        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in history_paths]
+
     elif current_screen == "MENU_CONN":
         menu_items = [
             "../ (戻る)",
@@ -1394,7 +1460,7 @@ def update_menu_items(reset_cursor=True):
         ]
     elif current_screen == "MENU_ALBUMS":
         album_list = sorted(list(albums_dict.keys()))
-        menu_items = ["../ (戻る)", "[★ お気に入り]"] + [f"[{alb}]" for alb in album_list]
+        menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [f"[{alb}]" for alb in album_list]
 
     elif current_screen == "MENU_TRACKS":
         track_paths = albums_dict.get(selected_album, [])
@@ -1420,6 +1486,7 @@ def play_current_track(full_refresh=False):
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             is_playing = True
+            record_playback_history(filepath)
             save_resume_state()
         except Exception as e:
             print(f"Play error: {e}")
@@ -1509,7 +1576,7 @@ def on_btn_menu_or_select():
                     if current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]: current_screen = "MENU_TOP"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
-                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS"]: current_screen = "MENU_ALBUMS"
+                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
                     elif current_screen == "MENU_SLEEP": current_screen = "MENU_PLAY_SETTINGS"
                     else: current_screen = "MENU_TOP"
                     update_menu_items(reset_cursor=True)
@@ -1570,6 +1637,15 @@ def on_btn_menu_or_select():
                     chosen_idx = cursor_idx - 1
                     if 0 <= chosen_idx < len(favorites_list):
                         playlist = favorites_list
+                        current_track_idx = chosen_idx
+                        play_current_track(full_refresh=True)
+                        current_screen = "PLAY"
+
+                elif current_screen == "MENU_HISTORY":
+                    history_paths = get_available_playback_history()
+                    chosen_idx = cursor_idx - 1
+                    if 0 <= chosen_idx < len(history_paths):
+                        playlist = list(history_paths)
                         current_track_idx = chosen_idx
                         play_current_track(full_refresh=True)
                         current_screen = "PLAY"
@@ -1637,9 +1713,13 @@ def on_btn_menu_or_select():
                         current_screen = "MENU_FAVS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
+                    elif selected == "[再生履歴]":
+                        current_screen = "MENU_HISTORY"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
                     else:
                         album_list = sorted(list(albums_dict.keys()))
-                        chosen_idx = cursor_idx - 2  # 0番目: "../", 1番目: "[★ お気に入り]"
+                        chosen_idx = cursor_idx - 3  # 0: 戻る, 1: お気に入り, 2: 再生履歴
                         if 0 <= chosen_idx < len(album_list):
                             selected_album = album_list[chosen_idx]
                             current_screen = "MENU_TRACKS"
