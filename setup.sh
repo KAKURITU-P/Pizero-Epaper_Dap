@@ -11,7 +11,7 @@ sudo apt install -y \
     python3-spidev \
     python3-rpi.gpio \
     bluetooth \
-    bluealsa \
+    bluez-alsa-utils \
     bluez-tools \
     rfkill \
     hostapd \

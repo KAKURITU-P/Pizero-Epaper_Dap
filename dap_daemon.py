@@ -554,10 +554,30 @@ def is_bt_connected(mac):
     if not mac:
         return False
     try:
-        res = subprocess.check_output(["bluetoothctl", "info", mac], text=True, errors='ignore')
-        return "Connected: yes" in res
+        res = subprocess.check_output(
+            ["bluetoothctl", "info", mac], text=True, errors='ignore', timeout=8
+        )
+        return any(line.strip() == "Connected: yes" for line in res.splitlines())
     except Exception:
         return False
+
+def get_bt_device_properties(mac):
+    """bluetoothctl info のデバイス属性を辞書で返す。"""
+    if not mac:
+        return {}
+    try:
+        res = subprocess.check_output(
+            ["bluetoothctl", "info", mac], text=True, errors='ignore', timeout=8
+        )
+    except Exception:
+        return {}
+
+    properties = {}
+    for line in res.splitlines():
+        if ":" in line:
+            key, value = line.strip().split(":", 1)
+            properties[key.strip()] = value.strip().lower()
+    return properties
 
 def get_cropped_ship(ship_index, target_height):
     path = "/home/pi/dap/ships.png"
@@ -978,10 +998,28 @@ threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
+    if not re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", mac or ""):
+        print(f"BT接続を中止: 不正なデバイスアドレスです ({mac!r})")
+        status_message = "BTアドレス不正"
+        request_display_update(is_full_refresh=False)
+        return
+
     wifi_on, _ = get_rfkill_status()
     if wifi_on:
         print("BT接続を中止: Wi-Fiが有効です")
+        status_message = "先にWi-FiをOFFにしてください"
+        request_display_update(is_full_refresh=False)
         return
+
+    previous_audio_mode = audio_output_mode
+
+    def restore_pwm_after_failure():
+        global audio_output_mode
+        subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+        subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+        audio_output_mode = "PWM"
+        safe_init_audio()
 
     connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
@@ -994,7 +1032,49 @@ def connect_bt_device(mac, name="Unknown"):
         except Exception:
             pass
 
-    config_content = f"""pcm.!default {{
+    subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
+    subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+    time.sleep(0.5)
+
+    def run_btctl(*args, timeout=15):
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", *args], capture_output=True, text=True,
+                errors="ignore", timeout=timeout, check=False
+            )
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            if result.returncode != 0 or "failed" in output.lower():
+                print(f"bluetoothctl {' '.join(args)}: {output or '失敗'}")
+            return result
+        except Exception as e:
+            print(f"bluetoothctl {' '.join(args)}: {e}")
+            return None
+
+    run_btctl("power", "on")
+    run_btctl("agent", "on")
+    run_btctl("default-agent")
+
+    properties = get_bt_device_properties(mac)
+    if properties.get("Paired") != "yes":
+        # BlueZで新規機器だけペアリングする。既存ペアリングへの再実行は解除を伴う。
+        run_btctl("--timeout", "5", "scan", "on", timeout=8)
+        run_btctl("pair", mac, timeout=35)
+        properties = get_bt_device_properties(mac)
+
+    paired = properties.get("Paired") == "yes"
+    if paired and properties.get("Trusted") != "yes":
+        run_btctl("trust", mac)
+
+    if paired and get_bt_device_properties(mac).get("Connected") != "yes":
+        run_btctl("connect", mac, timeout=25)
+
+    deadline = time.monotonic() + 12
+    while paired and time.monotonic() < deadline and not is_bt_connected(mac):
+        time.sleep(0.5)
+
+    connected = paired and is_bt_connected(mac)
+    if connected:
+        config_content = f"""pcm.!default {{
     type plug
     slave.pcm "equal"
 }}
@@ -1011,42 +1091,38 @@ ctl.equal {{
     type equal
 }}
 """
-    try:
-        with open(asoundrc_path, "w") as f:
-            f.write(config_content)
-    except Exception as e:
-        print(f"asoundrc write error: {e}")
-
-    subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
-    subprocess.run(["sudo", "systemctl", "restart", "bluealsa"], check=False)
-    time.sleep(0.5)
-
-    subprocess.run(["bluetoothctl", "power", "on"], check=False)
-    subprocess.run(["bluetoothctl", "agent", "on"], check=False)
-    subprocess.run(["bluetoothctl", "default-agent"], check=False)
-    time.sleep(0.5)
-
-    subprocess.run(["bluetoothctl", "trust", mac], check=False)
-    time.sleep(0.5)
-
-    subprocess.run(["bluetoothctl", "pair", mac], check=False)
-    time.sleep(2.0)
-
-    subprocess.run(["bluetoothctl", "connect", mac], check=False)
-    time.sleep(3.0)
-
-    if is_bt_connected(mac):
-        audio_output_mode = "BT"
+        old_config = None
+        config_existed = os.path.exists(asoundrc_path)
         try:
+            if config_existed:
+                with open(asoundrc_path, "r") as f:
+                    old_config = f.read()
+            with open(asoundrc_path, "w") as f:
+                f.write(config_content)
             subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
-        except Exception:
-            pass
-        
-        safe_init_audio()
-        apply_eq_settings()
-        status_message = "接続成功"
+            audio_output_mode = "BT"
+            safe_init_audio()
+            apply_eq_settings()
+            status_message = "接続成功"
+        except Exception as e:
+            print(f"BT ALSA設定エラー: {e}")
+            audio_output_mode = previous_audio_mode
+            status_message = "音声設定失敗"
+            try:
+                if config_existed and old_config is not None:
+                    with open(asoundrc_path, "w") as f:
+                        f.write(old_config)
+                elif not config_existed and os.path.exists(asoundrc_path):
+                    os.remove(asoundrc_path)
+            except Exception as restore_error:
+                print(f"ALSA設定の復元エラー: {restore_error}")
+            if previous_audio_mode == "PWM":
+                restore_pwm_after_failure()
     else:
-        status_message = "接続失敗"
+        status_message = "ペアリング失敗" if not paired else "接続失敗"
+        if previous_audio_mode == "PWM":
+            # 接続失敗時はPWMへ戻し、Wi-Fiを戻してSSH再接続を可能にする。
+            restore_pwm_after_failure()
 
     request_display_update(is_full_refresh=True)
     time.sleep(1.5)

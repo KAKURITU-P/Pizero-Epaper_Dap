@@ -72,7 +72,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ```bash
 sudo apt update
-sudo apt install -y python3-pip python3-pygame python3-pil python3-gpiozero python3-mutagen bluetooth bluez
+sudo apt install -y python3-pip python3-pygame python3-pil python3-gpiozero python3-mutagen bluetooth bluez bluez-alsa-utils
 
 ```
 
