@@ -19,6 +19,7 @@ sudo apt install -y \
     network-manager \
     fonts-takao-gothic \
     alsa-utils \
+    libasound2-plugin-equal \
     libasound2-dev \
     i2c-tools
 

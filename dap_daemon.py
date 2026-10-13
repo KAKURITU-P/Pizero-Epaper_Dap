@@ -1579,8 +1579,17 @@ def reset_inactivity_timer():
 
 def play_current_track(full_refresh=False):
     global is_playing, total_duration_sec, track_paused_time, last_drawn_segment
-    global start_time, paused_duration, pause_start_time
+    global start_time, paused_duration, pause_start_time, status_message
     if playlist:
+        if not pygame.mixer.get_init():
+            safe_init_audio()
+        if not pygame.mixer.get_init():
+            is_playing = False
+            status_message = "音声デバイスを初期化できません"
+            request_display_update(is_full_refresh=False)
+            print("Play error: audio mixer is not initialized")
+            return
+
         filepath = playlist[current_track_idx]
         total_duration_sec = get_track_duration_sec(filepath)
         track_paused_time = 0
@@ -1597,6 +1606,8 @@ def play_current_track(full_refresh=False):
             save_resume_state()
         except Exception as e:
             print(f"Play error: {e}")
+            is_playing = False
+            status_message = "再生できません"
 
         request_display_update(is_full_refresh=full_refresh)
 
@@ -1897,15 +1908,18 @@ def on_btn_play_or_back():
                 is_playing = False
                 request_display_update(is_full_refresh=False)
             else:
-                if pause_start_time > 0:
+                if pause_start_time > 0 and pygame.mixer.get_init():
                     paused_duration += (time.time() - pause_start_time)
                     pause_start_time = 0.0
-                    try: pygame.mixer.music.unpause()
-                    except Exception: pass
+                    try:
+                        pygame.mixer.music.unpause()
+                        is_playing = True
+                    except Exception:
+                        is_playing = False
                     request_display_update(is_full_refresh=False)
                 else:
+                    pause_start_time = 0.0
                     play_current_track(full_refresh=True)
-                is_playing = True
         else:
             current_screen = "PLAY"
             request_display_update(is_full_refresh=True)
@@ -2087,9 +2101,19 @@ try:
         if is_playing:
             with state_lock:
                 cur_sec = get_current_sec()
-            music_busy = pygame.mixer.music.get_busy()
+            try:
+                mixer_initialized = pygame.mixer.get_init() is not None
+                music_busy = pygame.mixer.music.get_busy() if mixer_initialized else False
+            except pygame.error as e:
+                print(f"Audio monitor error: {e}")
+                mixer_initialized = False
+                music_busy = False
 
-            if not music_busy or (total_duration_sec > 0 and cur_sec >= total_duration_sec + 1):
+            if not mixer_initialized:
+                is_playing = False
+            elif not music_busy:
+                handle_track_completion()
+            elif total_duration_sec > 0 and cur_sec >= total_duration_sec + 1:
                 handle_track_completion()
 
         with state_lock:
