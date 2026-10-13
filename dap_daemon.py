@@ -65,11 +65,19 @@ if os.path.exists(asoundrc_path):
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
-        subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
     else:
         audio_output_mode = "PWM"
 else:
     audio_output_mode = "PWM"
+
+# 起動時もWi-FiとBluetoothを同時に有効化しない
+if audio_output_mode == "BT":
+    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+    subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
+    subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
+else:
+    subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+    subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
 
 # --- ALSA Cライブラリ読み込み ---
 try:
@@ -440,37 +448,35 @@ def get_ip_address():
 def get_bt_codec_info():
     if audio_output_mode != "BT":
         return "PWM出力中"
-    
+
+    if not connected_bt_mac:
+        return "未接続"
+
     mac_path_part = connected_bt_mac.replace(":", "_").lower()
-    pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dp"
-    
-    try:
-        cmd = [
-            "gdbus", "call", "--system",
-            "--dest", "org.bluealsa",
-            "--object-path", pcm_path,
-            "--method", "org.freedesktop.DBus.Properties.Get",
-            "org.bluealsa.PCM", "Codec"
-        ]
-        res = subprocess.check_output(cmd, text=True, errors="ignore")
-        if "'" in res:
-            codec = res.split("'")[1]
-            return codec.upper()
-    except Exception:
-        pass
+    pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dpsrc/sink"
 
     try:
-        res = subprocess.check_output(["bluetoothctl", "info", connected_bt_mac], text=True, errors="ignore")
-        if "Connected: yes" in res:
-            for line in res.splitlines():
-                if "Name:" in line:
-                    return line.split(":", 1)[1].strip()
-            return "A2DP接続"
-    except Exception:
+        res = subprocess.check_output(
+            [
+                "gdbus", "call", "--system",
+                "--dest", "org.bluealsa",
+                "--object-path", pcm_path,
+                "--method", "org.freedesktop.DBus.Properties.Get",
+                "org.bluealsa.PCM1", "Codec",
+            ],
+            text=True,
+            errors="ignore",
+            timeout=1.0,
+        )
+
+        parts = res.split("'")
+        if len(parts) >= 2 and parts[1].strip():
+            return parts[1].strip().upper()
+
+    except (subprocess.SubprocessError, OSError):
         pass
 
-    return "未接続"
-
+    return "取得待ち"
 def get_current_wifi_ssid():
     try:
         res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
@@ -804,6 +810,11 @@ threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
+    wifi_on, _ = get_rfkill_status()
+    if wifi_on:
+        print("BT接続を中止: Wi-Fiが有効です")
+        return
+
     connected_bt_mac = mac
     status_message = f"接続中: {name[:10]}"
     request_display_update(is_full_refresh=False)
@@ -882,6 +893,9 @@ def set_audio_output(mode, mac=None):
     request_display_update(is_full_refresh=False)
 
     if mode == "BT":
+        # BTへ切り替えるとWi-Fi接続が切れる。BT開始前にWi-Fiを停止する。
+        subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+        time.sleep(0.3)
         target_mac = mac or connected_bt_mac
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
@@ -892,6 +906,11 @@ def set_audio_output(mode, mac=None):
             status_message = ""
 
     elif mode == "PWM":
+        # PWMへ戻す前にBlueALSAとBluetooth無線を停止する。
+        subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+        time.sleep(0.3)
+
         pwm_config = """pcm.!default {
     type plug
     slave.pcm "equal"
@@ -939,14 +958,29 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
+    """Wi-FiとBluetoothを同時に有効化しない"""
     wifi_on, bt_on = get_rfkill_status()
-    target = "wlan" if dev_type == "wifi" else "bluetooth"
-    currently_on = wifi_on if dev_type == "wifi" else bt_on
-    action = "block" if currently_on else "unblock"
     try:
-        subprocess.run(["sudo", "rfkill", action, target], check=False)
+        if dev_type == "wifi":
+            if wifi_on:
+                subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+            elif bt_on:
+                print("Wi-Fiを有効化できません: 先にBluetoothをOFFにしてください")
+                return
+            else:
+                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+        else:
+            if bt_on:
+                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+            elif wifi_on:
+                print("Bluetoothを有効化できません: 先にWi-FiをOFFにしてください")
+                return
+            else:
+                subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
         time.sleep(0.3)
-    except Exception: pass
+    except Exception as e:
+        print(f"[toggle_rfkill] Error: {e}")
 
 def get_ap_status():
     try:
@@ -959,13 +993,18 @@ def toggle_ap_mode():
     def _do_toggle():
         global status_message
         is_active = get_ap_status()
+        if not is_active:
+            _, bt_on = get_rfkill_status()
+            if bt_on:
+                print("APモードを中止: 先にBluetoothをOFFにしてください")
+                return
         try:
             if is_active:
                 status_message = "AP OFF中..."
                 request_display_update(is_full_refresh=False)
 
-                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
                 subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
 
             else:
@@ -973,9 +1012,9 @@ def toggle_ap_mode():
                 request_display_update(is_full_refresh=False)
 
                 subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "wpa_supplicant"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-9", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "wpa_supplicant"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
 
                 subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
                 subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
@@ -1037,6 +1076,10 @@ def get_saved_wifi_ssids():
 def connect_to_wifi(ssid):
     def _do_connect():
         global status_message
+        _, bt_on = get_rfkill_status()
+        if bt_on:
+            print("Wi-Fi接続を中止: 先にBluetoothをOFFにしてください")
+            return
         status_message = f"接続中: {ssid}"
         request_display_update(is_full_refresh=False)
         try:
@@ -1117,6 +1160,10 @@ def trigger_bt_scan():
     if is_bt_scanning: return
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
+        wifi_on, _ = get_rfkill_status()
+        if wifi_on:
+            print("BT検索を中止: Wi-Fiが有効です")
+            return
         is_bt_scanning = True
         status_message = "BT検索中(5秒)..."
         request_display_update(is_full_refresh=False)
@@ -1232,7 +1279,6 @@ def update_menu_items(reset_cursor=True):
         menu_items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
-            "GitHubから更新",  # <-- 追加
             "アプリ再起動",
             "ライセンス表示",
             f"IP: {get_ip_address()}",
@@ -1507,25 +1553,6 @@ def on_btn_menu_or_select():
                     if selected == "曲ライブラリ再読み込み":
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
-
-                    elif selected == "GitHubから更新":
-                        clean_shutdown_display("Updating & Restarting...")
-                        
-                        # バックグラウンドまたは別プロセスで Git fetch/reset 実行後に dap サービスを再起動
-                        def _update_and_restart():
-                            try:
-                                repo_dir = "/home/pi/dap" # ※リポジトリのパスを指定
-                                # 1. remote情報を取得
-                                subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False)
-                                # 2. ローカルの変更を強制上書きして最新のmain(またはmaster)に合わせる
-                                subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=repo_dir, check=False)
-                            except Exception as e:
-                                print(f"Git update failed: {e}")
-                            
-                            # 3. アプリ(dap daemon)再起動
-                            subprocess.run(["sudo", "systemctl", "restart", "dap"])
-
-                        threading.Thread(target=_update_and_restart, daemon=True).start()
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
