@@ -437,7 +437,7 @@ def get_library_entries(rel_dir, include_folder_play=False):
         dir_entries.append({
             "type": "dir",
             "rel_dir": child_rel,
-            "display": f"[DIR] {dir_name}/"
+            "display": f"[F] {dir_name}/"
         })
 
     track_entries = []
