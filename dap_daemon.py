@@ -223,6 +223,8 @@ FAV_FILE = os.path.join(DATA_DIR, "favorites.json")
 RESUME_FILE = os.path.join(DATA_DIR, "resume.json")
 PLAY_DATA_FILE = os.path.join(DATA_DIR, "play_data.json")
 PLAYBACK_HISTORY_LIMIT = 30
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
+ROOT_REL_DIR = "."
 
 if not os.path.exists(MUSIC_DIR):
     os.makedirs(MUSIC_DIR, exist_ok=True)
@@ -233,6 +235,8 @@ playlist_original = []
 playlist = []
 albums_dict = {}
 selected_album = None
+library_tree = {}
+library_menu_entries = []
 current_track_idx = 0
 favorites_list = []
 playback_history = []
@@ -374,25 +378,132 @@ def load_resume_state():
         except Exception:
             pass
 
-def reload_music_library():
-    global playlist_original, playlist, albums_dict, current_track_idx
-    extensions = ('*.mp3', '*.wav', '*.ogg', '*.flac', '*.m4a')
-    found_files = []
-    for ext in extensions:
-        found_files.extend(glob.glob(os.path.join(MUSIC_DIR, "**", ext), recursive=True))
-        found_files.extend(glob.glob(os.path.join(MUSIC_DIR, ext)))
+def normalize_rel_dir(rel_dir):
+    """MUSIC_DIR基準の相対ディレクトリを正規化し、上位脱出を防ぐ"""
+    if not rel_dir or rel_dir in [".", "./"]:
+        return ROOT_REL_DIR
+    normalized = os.path.normpath(rel_dir)
+    if os.path.isabs(normalized) or normalized.startswith(".."):
+        return ROOT_REL_DIR
+    return normalized
 
-    playlist_original = sorted(list(set(found_files)))
+def is_within_music_dir(path):
+    music_root = os.path.normpath(MUSIC_DIR)
+    candidate = os.path.normpath(path)
+    try:
+        return os.path.commonpath([music_root, candidate]) == music_root
+    except ValueError:
+        return False
+
+def has_library_content(rel_dir, content_cache):
+    rel_dir = normalize_rel_dir(rel_dir)
+    if rel_dir in content_cache:
+        return content_cache[rel_dir]
+    entry = library_tree.get(rel_dir, {"subdirs": set(), "tracks": []})
+    has_content = bool(entry["tracks"])
+    if not has_content:
+        for child_rel in entry["subdirs"]:
+            if has_library_content(child_rel, content_cache):
+                has_content = True
+                break
+    content_cache[rel_dir] = has_content
+    return has_content
+
+def get_direct_tracks_in_dir(rel_dir):
+    rel_dir = normalize_rel_dir(rel_dir)
+    entry = library_tree.get(rel_dir, {"subdirs": set(), "tracks": []})
+    return list(entry["tracks"])
+
+def get_tracks_in_subtree(rel_dir):
+    rel_dir = normalize_rel_dir(rel_dir)
+    if rel_dir == ROOT_REL_DIR:
+        return list(playlist_original)
+
+    subtree_tracks = []
+    for path in playlist_original:
+        rel_path = os.path.normpath(os.path.relpath(path, MUSIC_DIR))
+        rel_parent = normalize_rel_dir(os.path.dirname(rel_path))
+        if rel_parent == rel_dir or rel_parent.startswith(rel_dir + os.sep):
+            subtree_tracks.append(path)
+    return subtree_tracks
+
+def get_library_entries(rel_dir, include_folder_play=False):
+    rel_dir = normalize_rel_dir(rel_dir)
+    entry = library_tree.get(rel_dir, {"subdirs": set(), "tracks": []})
+
+    dir_entries = []
+    for child_rel in sorted(entry["subdirs"], key=lambda p: os.path.basename(p).lower()):
+        dir_name = os.path.basename(child_rel)
+        dir_entries.append({
+            "type": "dir",
+            "rel_dir": child_rel,
+            "display": f"[DIR] {dir_name}/"
+        })
+
+    track_entries = []
+    for path in sorted(entry["tracks"], key=lambda p: os.path.basename(p).lower()):
+        track_entries.append({
+            "type": "track",
+            "path": path,
+            "display": os.path.splitext(os.path.basename(path))[0]
+        })
+
+    entries = dir_entries + track_entries
+    if include_folder_play:
+        subtree_tracks = get_tracks_in_subtree(rel_dir)
+        if subtree_tracks:
+            entries.insert(0, {
+                "type": "play_folder",
+                "rel_dir": rel_dir,
+                "display": "[▶] このフォルダ以下を再生"
+            })
+    return entries
+
+def reload_music_library():
+    global playlist_original, playlist, albums_dict, current_track_idx, library_tree
+
+    library_tree = {ROOT_REL_DIR: {"subdirs": set(), "tracks": []}}
+    found_files = []
+    seen_paths = set()
+
+    for root, dirnames, filenames in os.walk(MUSIC_DIR):
+        rel_root = normalize_rel_dir(os.path.relpath(root, MUSIC_DIR))
+        library_tree.setdefault(rel_root, {"subdirs": set(), "tracks": []})
+
+        for dirname in dirnames:
+            child_rel = normalize_rel_dir(os.path.join(rel_root, dirname))
+            library_tree.setdefault(child_rel, {"subdirs": set(), "tracks": []})
+            library_tree[rel_root]["subdirs"].add(child_rel)
+
+        for filename in filenames:
+            _, ext = os.path.splitext(filename)
+            if ext.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+                continue
+            full_path = os.path.normpath(os.path.join(root, filename))
+            if not is_within_music_dir(full_path):
+                continue
+            if full_path in seen_paths:
+                continue
+            seen_paths.add(full_path)
+            found_files.append(full_path)
+            library_tree[rel_root]["tracks"].append(full_path)
+
+    content_cache = {}
+    for rel_dir, entry in list(library_tree.items()):
+        entry["subdirs"] = {
+            child_rel for child_rel in entry["subdirs"]
+            if has_library_content(child_rel, content_cache)
+        }
+        entry["tracks"].sort(key=lambda p: os.path.basename(p).lower())
+
+    playlist_original = sorted(found_files)
     playlist = list(playlist_original)
     current_track_idx = 0
 
     albums_dict = {}
-    for filepath in playlist_original:
-        rel_dir = os.path.dirname(os.path.relpath(filepath, MUSIC_DIR))
-        album_name = rel_dir if rel_dir else "シングル曲"
-        if album_name not in albums_dict:
-            albums_dict[album_name] = []
-        albums_dict[album_name].append(filepath)
+    for rel_dir, entry in library_tree.items():
+        if entry["tracks"] or entry["subdirs"]:
+            albums_dict[rel_dir] = list(entry["tracks"])
 
 load_favorites()
 reload_music_library()
@@ -938,10 +1049,12 @@ def display_worker():
             else:
                 header_text = "メニュー"
                 if scr == "MENU_SYS": header_text = "メニュー > システム設定"
-                elif scr == "MENU_ALBUMS": header_text = "メニュー > アルバム"
+                elif scr == "MENU_ALBUMS": header_text = "メニュー > ライブラリ"
                 elif scr == "MENU_FAVS": header_text = "アルバム > お気に入り"
                 elif scr == "MENU_HISTORY": header_text = "アルバム > 再生履歴"
-                elif scr == "MENU_TRACKS": header_text = truncate_by_width(f"アルバム > {sel_alb}", font_main, 230) if sel_alb else "アルバム"
+                elif scr == "MENU_TRACKS":
+                    rel_label = "ルート" if not sel_alb or sel_alb == ROOT_REL_DIR else sel_alb
+                    header_text = truncate_by_width(f"ライブラリ > {rel_label}", font_main, 230)
                 elif scr == "MENU_PLAY_SETTINGS": header_text = "メニュー > 再生設定"
                 elif scr == "MENU_BT": header_text = "接続設定 > Bluetooth"
                 elif scr == "MENU_BT_PAIRED": header_text = "Bluetooth > 登録済み"
@@ -1472,10 +1585,11 @@ def trigger_bt_scan():
     threading.Thread(target=_scan_thread, daemon=True).start()
 
 def update_menu_items(reset_cursor=True):
-    global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids
+    global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, library_menu_entries, selected_album
     if reset_cursor:
         cursor_idx = 0
         scroll_offset = 0
+    library_menu_entries = []
 
     if current_screen == "MENU_TOP":
         pct, _ = get_battery_info()
@@ -1581,12 +1695,14 @@ def update_menu_items(reset_cursor=True):
             "シャットダウン"
         ]
     elif current_screen == "MENU_ALBUMS":
-        album_list = sorted(list(albums_dict.keys()))
-        menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [f"[{alb}]" for alb in album_list]
+        library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
+        menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [entry["display"] for entry in library_menu_entries]
 
     elif current_screen == "MENU_TRACKS":
-        track_paths = albums_dict.get(selected_album, [])
-        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in track_paths]
+        browsing_dir = normalize_rel_dir(selected_album)
+        selected_album = browsing_dir
+        library_menu_entries = get_library_entries(browsing_dir, include_folder_play=True)
+        menu_items = ["../ (戻る)"] + [entry["display"] for entry in library_menu_entries]
 
 def reset_inactivity_timer():
     global last_user_action_time
@@ -1706,10 +1822,24 @@ def on_btn_menu_or_select():
                 selected = menu_items[cursor_idx]
 
                 if selected.startswith("../"):
-                    if current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]: current_screen = "MENU_TOP"
+                    if current_screen == "MENU_TRACKS":
+                        browsing_dir = normalize_rel_dir(selected_album)
+                        if browsing_dir == ROOT_REL_DIR:
+                            current_screen = "MENU_TOP"
+                            selected_album = None
+                        else:
+                            parent_dir = normalize_rel_dir(os.path.dirname(browsing_dir))
+                            if parent_dir == ROOT_REL_DIR:
+                                current_screen = "MENU_ALBUMS"
+                                selected_album = None
+                            else:
+                                selected_album = parent_dir
+                                current_screen = "MENU_TRACKS"
+                    elif current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]:
+                        current_screen = "MENU_TOP"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
-                    elif current_screen in ["MENU_TRACKS", "MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
+                    elif current_screen in ["MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
                     elif current_screen == "MENU_SLEEP": current_screen = "MENU_PLAY_SETTINGS"
                     else: current_screen = "MENU_TOP"
                     update_menu_items(reset_cursor=True)
@@ -1718,6 +1848,7 @@ def on_btn_menu_or_select():
 
                 if current_screen == "MENU_TOP":
                     if selected == "アルバム":
+                        selected_album = None
                         current_screen = "MENU_ALBUMS"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
@@ -1851,22 +1982,45 @@ def on_btn_menu_or_select():
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     else:
-                        album_list = sorted(list(albums_dict.keys()))
                         chosen_idx = cursor_idx - 3  # 0: 戻る, 1: お気に入り, 2: 再生履歴
-                        if 0 <= chosen_idx < len(album_list):
-                            selected_album = album_list[chosen_idx]
-                            current_screen = "MENU_TRACKS"
-                            update_menu_items(reset_cursor=True)
-                            request_display_update(is_full_refresh=True)
+                        if 0 <= chosen_idx < len(library_menu_entries):
+                            chosen_entry = library_menu_entries[chosen_idx]
+                            if chosen_entry["type"] == "dir":
+                                selected_album = chosen_entry["rel_dir"]
+                                current_screen = "MENU_TRACKS"
+                                update_menu_items(reset_cursor=True)
+                                request_display_update(is_full_refresh=True)
+                            elif chosen_entry["type"] == "track":
+                                direct_tracks = get_direct_tracks_in_dir(ROOT_REL_DIR)
+                                if chosen_entry["path"] in direct_tracks:
+                                    playlist = direct_tracks
+                                    current_track_idx = direct_tracks.index(chosen_entry["path"])
+                                    play_current_track(full_refresh=True)
+                                    current_screen = "PLAY"
 
                 elif current_screen == "MENU_TRACKS":
-                    track_paths = albums_dict.get(selected_album, [])
                     chosen_idx = cursor_idx - 1
-                    if 0 <= chosen_idx < len(track_paths):
-                        playlist = track_paths
-                        current_track_idx = chosen_idx
-                        play_current_track(full_refresh=True)
-                        current_screen = "PLAY"
+                    if 0 <= chosen_idx < len(library_menu_entries):
+                        chosen_entry = library_menu_entries[chosen_idx]
+                        if chosen_entry["type"] == "dir":
+                            selected_album = chosen_entry["rel_dir"]
+                            update_menu_items(reset_cursor=True)
+                            request_display_update(is_full_refresh=True)
+                        elif chosen_entry["type"] == "play_folder":
+                            subtree_tracks = get_tracks_in_subtree(chosen_entry["rel_dir"])
+                            if subtree_tracks:
+                                playlist = subtree_tracks
+                                current_track_idx = 0
+                                play_current_track(full_refresh=True)
+                                current_screen = "PLAY"
+                        elif chosen_entry["type"] == "track":
+                            browsing_dir = normalize_rel_dir(selected_album)
+                            direct_tracks = get_direct_tracks_in_dir(browsing_dir)
+                            if chosen_entry["path"] in direct_tracks:
+                                playlist = direct_tracks
+                                current_track_idx = direct_tracks.index(chosen_entry["path"])
+                                play_current_track(full_refresh=True)
+                                current_screen = "PLAY"
 
                 elif current_screen == "MENU_SYS":
                     if selected == "曲ライブラリ再読み込み":
@@ -1993,14 +2147,14 @@ def on_btn_prev():
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. アルバムの曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
+        # 2. フォルダ内の曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
         elif current_screen == "MENU_TRACKS":
-            track_paths = albums_dict.get(selected_album, [])
             chosen_idx = cursor_idx - 1  # 0番目は "../ (戻る)"
-            if 0 <= chosen_idx < len(track_paths):
-                target_path = track_paths[chosen_idx]
-                is_fav = toggle_favorite_by_path(target_path)
-                show_fav_toast(is_fav)
+            if 0 <= chosen_idx < len(library_menu_entries):
+                entry = library_menu_entries[chosen_idx]
+                if entry["type"] == "track":
+                    is_fav = toggle_favorite_by_path(entry["path"])
+                    show_fav_toast(is_fav)
 
         # 3. 通常再生時などの曲戻し動作
         elif playlist:
