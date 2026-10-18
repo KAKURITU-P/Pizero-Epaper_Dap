@@ -1152,8 +1152,8 @@ def connect_bt_device(mac, name="Unknown"):
         return
     mac = mac.upper()
 
-    wifi_on, _ = get_rfkill_status()
-    if wifi_on:
+    initial_wifi_on, initial_bt_on = get_rfkill_status()
+    if initial_wifi_on:
         print("BT接続を中止: Wi-Fiが有効です")
         status_message = "先にWi-FiをOFFにしてください"
         request_display_update(is_full_refresh=False)
@@ -1165,8 +1165,8 @@ def connect_bt_device(mac, name="Unknown"):
     def restore_pwm_after_failure():
         global audio_output_mode
         subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-        subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+        subprocess.run(["sudo", "rfkill", "unblock" if initial_wifi_on else "block", "wlan"], check=False)
+        subprocess.run(["sudo", "rfkill", "unblock" if initial_bt_on else "block", "bluetooth"], check=False)
         audio_output_mode = "PWM"
         safe_init_audio()
 
@@ -1221,6 +1221,7 @@ def connect_bt_device(mac, name="Unknown"):
     run_btctl("agent", "on")
 
     properties = get_bt_device_properties(mac)
+    requires_user_confirmation = False
     if not bt_prop_is_yes(properties, "paired"):
         # 対話入力不可UIのため KeyboardDisplay を優先し、必要なら NoInputNoOutput にフォールバック。
         pairing_session = run_btctl_session(
@@ -1237,8 +1238,16 @@ def connect_bt_device(mac, name="Unknown"):
             )
             if fallback_session is not None:
                 session_output = "\n".join(part for part in (session_output, fallback_session.stdout, fallback_session.stderr) if part)
-        if session_output and ("confirm passkey" in session_output.lower() or "enter pin code" in session_output.lower()):
+        lowered_output = session_output.lower()
+        if session_output and (
+            "confirm passkey" in lowered_output
+            or "enter pin code" in lowered_output
+            or "request authorization" in lowered_output
+            or "authentication" in lowered_output
+        ):
+            requires_user_confirmation = True
             print("BTペアリング要確認: UI上でPIN/確認入力は非対応のため失敗することがあります")
+            print(f"BTペアリングログ: {session_output[-600:]}")
         properties = get_bt_device_properties(mac)
 
     paired = bt_prop_is_yes(properties, "paired")
@@ -1300,7 +1309,7 @@ ctl.equal {{
             if previous_audio_mode == "PWM":
                 restore_pwm_after_failure()
     else:
-        status_message = "ペアリング失敗" if not paired else "接続失敗"
+        status_message = "PIN/確認が必要です" if (not paired and requires_user_confirmation) else ("ペアリング失敗" if not paired else "接続失敗")
         connected_bt_mac = previous_connected_mac
         if previous_audio_mode == "PWM":
             # 接続失敗時はPWMへ戻し、Wi-Fiを戻してSSH再接続を可能にする。
@@ -1482,7 +1491,7 @@ def get_saved_wifi_connections():
             if conn_type != "802-11-wireless" or cleaned == "Pi-DAP-AP" or is_probably_invalid_ssid(cleaned):
                 continue
             merged.setdefault(cleaned, {"ssid": cleaned, "nmcli_id": None, "wpa_id": None})
-            merged[cleaned]["nmcli_id"] = cleaned
+            merged[cleaned]["nmcli_id"] = name
     except Exception:
         pass
 
@@ -1515,6 +1524,11 @@ def connect_to_wifi(target):
             target_wpa_id = (target.get("wpa_id") or "").strip() or None
         else:
             target_ssid = str(target).strip()
+            for entry in get_saved_wifi_connections():
+                if (entry.get("ssid") or "").strip() == target_ssid:
+                    target_nmcli_id = (entry.get("nmcli_id") or "").strip() or None
+                    target_wpa_id = (entry.get("wpa_id") or "").strip() or None
+                    break
 
         if not target_ssid:
             return
@@ -1696,6 +1710,10 @@ def trigger_bt_scan():
         request_display_update(is_full_refresh=False)
     threading.Thread(target=_scan_thread, daemon=True).start()
 
+def get_bt_scanned_devices_snapshot():
+    with state_lock:
+        return list(bt_scanned_devices)
+
 def update_menu_items(reset_cursor=True):
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
     if reset_cursor:
@@ -1796,10 +1814,11 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_BT_SCAN":
         items = ["../ (戻る)", "検索開始"]
+        scanned_snapshot = get_bt_scanned_devices_snapshot()
         name_counts = {}
-        for _, name in bt_scanned_devices:
+        for _, name in scanned_snapshot:
             name_counts[name] = name_counts.get(name, 0) + 1
-        for mac, name in bt_scanned_devices:
+        for mac, name in scanned_snapshot:
             items.append(f"ペアリング: {format_bt_menu_name(name, mac, include_suffix=name_counts.get(name, 0) > 1)}")
         menu_items = items
 
