@@ -43,7 +43,7 @@ def main():
 
     while not stopping:
         try:
-            with SMBus(1) as bus:
+            with SMBus(3) as bus:
                 adc_v = read_voltage(bus)
             if not 0 <= adc_v <= 2.048:
                 raise ValueError(f"ADC input out of range: {adc_v:.3f} V")
