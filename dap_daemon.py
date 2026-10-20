@@ -800,7 +800,7 @@ def render_cat_clock(image, draw, width, height):
     if not has_drawn:
         draw.polygon([(20, sea_level - 10), (28, sea_level - 2), (90, sea_level - 2), (100, sea_level - 10)], fill=0)
 
-   pct_str, volt_str = get_battery_info()
+    pct_str, volt_str = get_battery_info()
     
     draw.rectangle([width - 75, 2, width - 2, 42], outline=0, fill=255)
     if volt_str:
