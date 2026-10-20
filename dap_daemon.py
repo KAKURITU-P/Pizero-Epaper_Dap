@@ -958,7 +958,7 @@ def start_github_update():
     if github_update_in_progress:
         return
     github_update_in_progress = True
-    status_message = "画面を初期化して更新中..."
+    status_message = "更新データを取得中..."
     # Full refresh calls epd.init(), which hardware-resets the panel before waiting for BUSY.
     request_display_update(is_full_refresh=True)
     threading.Thread(target=_github_update_worker, daemon=True).start()
