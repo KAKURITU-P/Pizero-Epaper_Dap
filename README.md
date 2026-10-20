@@ -33,6 +33,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 | パーツ | 型番 / 仕様 |
 | :--- | :--- |
 | **SBC** | Raspberry Pi Zero WH |
+| **OS** | Raspberry Pi OS (Trixie) |
 | **ディスプレイ** | Waveshare 2.13inch e-Paper HAT (V4) (250×122 resolution) |
 | **ボタン** | タクトスイッチ × 6 (GPIO 接続) |
 | **オーディオ出力** | ALSA アナログ出力 / Bluetooth A2DP オーディオ |
