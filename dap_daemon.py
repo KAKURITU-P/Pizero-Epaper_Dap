@@ -800,7 +800,7 @@ def render_cat_clock(image, draw, width, height):
     if not has_drawn:
         draw.polygon([(20, sea_level - 10), (28, sea_level - 2), (90, sea_level - 2), (100, sea_level - 10)], fill=0)
 
-    pct_str, volt_str = get_battery_info()
+   pct_str, volt_str = get_battery_info()
     
     draw.rectangle([width - 75, 2, width - 2, 42], outline=0, fill=255)
     if volt_str:
@@ -816,13 +816,13 @@ def render_cat_clock(image, draw, width, height):
         draw.rectangle([box_x, box_y, box_x + box_w, box_y + 12], fill=0)
         tag_text = truncate_by_width(f"LINK: {current_ssid}", font_small, box_w - 6)
         draw.text((box_x + 4, box_y + 1), tag_text, font=font_small, fill=255)
-
-        cur_time = time.strftime("%H:%M")
-        draw.text((box_x + 12, box_y + 13), cur_time, font=font_clock, fill=0)
     else:
-        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 14], fill=0)
-        draw.text((box_x + 6, box_y + 1), "[ BASE: KURE ]", font=font_small, fill=255)
-        draw.text((box_x + 8, box_y + 18), "LAT 34°14'N", font=font_main, fill=0)
+        draw.rectangle([box_x, box_y, box_x + box_w, box_y + 12], fill=0)
+        draw.text((box_x + 6, box_y + 1), "[ RTC ]", font=font_small, fill=255)
+
+    # どちらの状態でも時刻を常時表示する
+    cur_time = time.strftime("%H:%M")
+    draw.text((box_x + 12, box_y + 13), cur_time, font=font_clock, fill=0)
 
 def render_eq_screen(image, draw, width, height):
     draw.text((8, 2), "[ EQUALIZER ]", font=font_main, fill=0)
