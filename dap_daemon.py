@@ -1131,12 +1131,16 @@ threading.Thread(target=display_worker, daemon=True).start()
 
 # --- 定期更新スレッド ---
 def cat_clock_timer_thread():
+    last_min = -1
     while True:
-        time.sleep(10)
+        time.sleep(1)  # 1秒おきに軽く時刻をチェック
         with state_lock:
             if current_screen == "CAT_CLOCK":
-                # Wi-Fiの有無に関わらず、CAT_CLOCK画面なら定期更新して時刻を進める
-                request_display_update(is_full_refresh=False)
+                current_min = time.localtime().tm_min
+                # 分が変わったときだけ画面更新をリクエスト
+                if current_min != last_min:
+                    last_min = current_min
+                    request_display_update(is_full_refresh=False)
 
 threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 
