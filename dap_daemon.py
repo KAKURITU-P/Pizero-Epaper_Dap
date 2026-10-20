@@ -1135,9 +1135,8 @@ def cat_clock_timer_thread():
         time.sleep(10)
         with state_lock:
             if current_screen == "CAT_CLOCK":
-                wifi_on, _ = get_rfkill_status()
-                if wifi_on:
-                    request_display_update(is_full_refresh=False)
+                # Wi-Fiの有無に関わらず、CAT_CLOCK画面なら定期更新して時刻を進める
+                request_display_update(is_full_refresh=False)
 
 threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 
