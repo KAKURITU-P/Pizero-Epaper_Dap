@@ -231,6 +231,7 @@ DATA_DIR = "/home/pi/dap"
 FAV_FILE = os.path.join(DATA_DIR, "favorites.json")
 RESUME_FILE = os.path.join(DATA_DIR, "resume.json")
 PLAY_DATA_FILE = os.path.join(DATA_DIR, "play_data.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 PLAYBACK_HISTORY_LIMIT = 30
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
 ROOT_REL_DIR = "."
@@ -257,6 +258,56 @@ repeat_mode = 0
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
 sleep_timer_pending = False  
+
+# イースターエッグ & EQ 関連変数
+easter_click_count = 0
+last_easter_click_time = 0.0
+is_clock_unlocked = False
+is_eq_unlocked = False
+eq_bands = ["BASS", "MID", "TREBLE"]
+eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}
+eq_cursor = 0
+
+def load_settings():
+    global is_clock_unlocked, is_eq_unlocked, eq_values
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("settings.json must contain a JSON object")
+
+        is_clock_unlocked = bool(data.get("is_clock_unlocked", False))
+        is_eq_unlocked = bool(data.get("is_eq_unlocked", False))
+        saved_eq = data.get("eq_values", {})
+        if isinstance(saved_eq, dict):
+            for band in eq_bands:
+                value = saved_eq.get(band, 0)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    eq_values[band] = max(-6, min(6, int(value)))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+        print(f"Settings load error: {e}")
+
+def save_settings():
+    temp_file = SETTINGS_FILE + ".tmp"
+    try:
+        data = {
+            "is_clock_unlocked": is_clock_unlocked,
+            "is_eq_unlocked": is_eq_unlocked,
+            "eq_values": {band: eq_values[band] for band in eq_bands},
+        }
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_file, SETTINGS_FILE)
+    except (OSError, TypeError, ValueError) as e:
+        print(f"Settings save error: {e}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass
 
 def load_favorites():
     global favorites_list
@@ -518,6 +569,7 @@ load_favorites()
 reload_music_library()
 load_playback_history()
 load_resume_state()
+load_settings()
 
 is_playing = False
 is_shuffle = False
@@ -556,16 +608,6 @@ DEBOUNCE_TIME = 0.25
 
 state_lock = threading.Lock()
 
-# イースターエッグ & EQ 関連変数
-easter_click_count = 0
-last_easter_click_time = 0.0
-is_clock_unlocked = False
-is_eq_unlocked = False
-
-eq_bands = ["BASS", "MID", "TREBLE"]
-eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}
-eq_cursor = 0
-
 def apply_eq_settings():
     bass = eq_values["BASS"]
     mid = eq_values["MID"]
@@ -593,6 +635,8 @@ def apply_eq_settings():
 
     except Exception as e:
         print(f"EQ Control Error: {e}")
+
+apply_eq_settings()
 
 random_ships_cache = None
 last_cat_clock_minute = -1
@@ -1827,7 +1871,7 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_SYS":
         bt_codec = get_bt_codec_info()
-        menu_items = [
+        items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
             "GitHubから更新",
@@ -1838,6 +1882,9 @@ def update_menu_items(reset_cursor=True):
             "再起動",
             "シャットダウン"
         ]
+        if is_clock_unlocked or is_eq_unlocked:
+            items.insert(5, "隠し機能を削除")
+        menu_items = items
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
         menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [entry["display"] for entry in library_menu_entries]
@@ -1928,6 +1975,7 @@ def check_easter_egg_trigger():
         easter_click_count = 0
         is_clock_unlocked = True
         is_eq_unlocked = True
+        save_settings()
         current_screen = "CAT_CLOCK"
         request_display_update(is_full_refresh=True)
         return True
@@ -1941,6 +1989,7 @@ def parse_clean_name(selected_str, prefix):
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
+    global is_clock_unlocked, is_eq_unlocked
     with state_lock:
         reset_inactivity_timer()
 
@@ -2173,6 +2222,15 @@ def on_btn_menu_or_select():
                     elif selected == "GitHubから更新":
                         start_github_update()
 
+                    elif selected == "隠し機能を削除":
+                        is_clock_unlocked = False
+                        is_eq_unlocked = False
+                        save_settings()
+                        current_screen = "MENU_TOP"
+                        update_menu_items(reset_cursor=True)
+                        status_message = "隠し機能を削除しました"
+                        request_display_update(is_full_refresh=True)
+
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
                             status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.0 {get_git_short_hash()}]"
@@ -2204,6 +2262,7 @@ def on_btn_play_or_back():
                 eq_values["BASS"] = 0
                 eq_values["MID"] = 0
                 eq_values["TREBLE"] = 0
+                save_settings()
             apply_eq_settings()
             current_screen = "PLAY"
             request_display_update(is_full_refresh=True)
@@ -2246,6 +2305,7 @@ def on_btn_up_action():
             if eq_cursor < 3:
                 band = eq_bands[eq_cursor]
                 eq_values[band] = min(6, eq_values[band] + 1)
+                save_settings()
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
@@ -2267,6 +2327,7 @@ def on_btn_down_action():
             if eq_cursor < 3:
                 band = eq_bands[eq_cursor]
                 eq_values[band] = max(-6, eq_values[band] - 1)
+                save_settings()
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
