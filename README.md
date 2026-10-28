@@ -149,3 +149,27 @@ sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh
 ```
 
 GitHub更新では、更新処理の前に画面の全画面更新を要求します。全画面更新時にドライバーがパネルのRSTを動作させてからBUSY状態を確認します。BUSYは入力信号のため、ソフトウェアから直接解除はできません。配線や接触不良がある場合は、接続の確認も必要です。
+
+### BlueALSA手動接続の確認
+
+Bluetooth音声出力にはBlueALSAを使用します。接続完了後はBluetoothの接続状態だけでなく、対象機器のA2DP用BlueALSA PCMがALSAへ公開されたことを確認してから、`.asoundrc` とPygameの音声出力を切り替えます。
+
+Bluetooth機器の接続は手動操作です。起動時の自動接続、切断後のバックグラウンド自動再接続、PIN入力には対応していません。
+
+Bluetooth出力へ切り替える場合は、Wi-Fiを先にOFFにしてください。本プロジェクトでは、BluetoothとWi-Fiを同時に有効化しない既存方針を維持しています。
+
+実機では、次のコマンドでBlueALSAの状態を確認できます。
+
+```bash
+sudo systemctl is-active bluealsa
+bluetoothctl info AA:BB:CC:DD:EE:FF
+aplay -L | grep -i bluealsa
+```
+
+`AA:BB:CC:DD:EE:FF` は実際のBluetoothイヤホンのMACアドレスに置き換えてください。
+
+必要なパッケージは次のとおりです。
+
+```bash
+sudo apt update
+sudo apt install -y bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal
