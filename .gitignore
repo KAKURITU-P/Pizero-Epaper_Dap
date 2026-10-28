@@ -4,11 +4,6 @@ __pycache__/
 .DS_Store
 waveshare_epd/
 
-<<<<<<< HEAD
-
-=======
->>>>>>> 9de16e6c25194d44c4d319938548a1ca45051086
-# Runtime state and local backups
 favorites.json
 play_data.json
 resume.json
