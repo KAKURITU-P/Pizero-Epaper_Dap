@@ -1,24 +1,21 @@
 diff --git a/dap_daemon.py b/dap_daemon.py
 --- a/dap_daemon.py
 +++ b/dap_daemon.py
-@@ -18,6 +18,10 @@ import waveshare_epd.epd2in13_V4 as epd2in13
+@@ -18,6 +18,10 @@ import pygame
+ from PIL import Image, ImageDraw, ImageFont, ImageOps
+ import waveshare_epd.epd2in13_V4 as epd2in13
  from gpiozero import Button
- from network_parse_utils import (
-     is_valid_bt_mac,
-@@ -27,6 +31,10 @@ from network_parse_utils import (
-     resolve_bt_display_name,
- )
 +from bluealsa_utils import (
 +    build_bluealsa_asoundrc,
 +    pcm_list_contains_device,
 +)
- 
- BASE_DIR = os.path.dirname(os.path.abspath(__file__))
- for _path in (BASE_DIR, "/home/pi/dap"):
-@@ -732,6 +740,57 @@ def get_current_wifi_ssid():
-     return None
- 
- 
+ from network_parse_utils import (
+     is_valid_bt_mac,
+     is_probably_invalid_ssid,
+@@ -724,6 +728,55 @@ def get_bt_codec_info():
+     return "取得待ち"
++
++
 +def is_bluealsa_active():
 +    """BlueALSAサービスが起動中か確認する。"""
 +    try:
@@ -33,10 +30,10 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +
 +
 +def get_bluealsa_pcm_list():
-+    """ALSAが認識しているPCM一覧を返す。"""
++    """bluealsa-aplayが認識しているBluetooth PCM一覧を返す。"""
 +    try:
 +        result = subprocess.run(
-+            ["aplay", "-L"],
++            ["bluealsa-aplay", "-L"],
 +            capture_output=True,
 +            text=True,
 +            errors="ignore",
@@ -51,27 +48,23 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +
 +
 +def wait_for_bluealsa_pcm(mac, timeout=10.0):
-+    """対象Bluetooth機器のBlueALSA PCMが利用可能になるまで待つ。"""
++    """対象Bluetooth機器のA2DP PCMが公開されるまで待つ。"""
 +    deadline = time.monotonic() + timeout
-+
 +    while time.monotonic() < deadline:
 +        if pcm_list_contains_device(get_bluealsa_pcm_list(), mac):
 +            return True
 +        time.sleep(0.5)
-+
 +    return False
 +
 +
 +def write_text_atomically(path, content):
 +    """設定ファイルを一時ファイル経由で安全に置き換える。"""
 +    temp_path = f"{path}.tmp"
-+
 +    try:
 +        with open(temp_path, "w", encoding="utf-8") as file:
 +            file.write(content)
 +            file.flush()
 +            os.fsync(file.fileno())
-+
 +        os.replace(temp_path, path)
 +    except Exception:
 +        try:
@@ -80,30 +73,13 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +        except OSError:
 +            pass
 +        raise
-+
-+
- def is_bt_connected(mac):
-@@ -1308,31 +1367,70 @@ def connect_bt_device(mac, name="Unknown"):
-     connected = paired and is_bt_connected(mac)
  
+ def get_current_wifi_ssid():
+@@ -1310,7 +1363,44 @@ def connect_bt_device(mac, name="Unknown"):
+ 
+     connected = paired and is_bt_connected(mac)
      if connected:
 -        config_content = f"""pcm.!default {{
--    type plug
--    slave.pcm "equal"
--}}
--
--pcm.equal {{
--    type equal
--    slave.pcm {{
--        type bluealsa
--        device "{mac}"
--        profile "a2dp"
--    }}
--}}
--ctl.equal {{
--    type equal
--}}
--"""
 +        if not is_bluealsa_active():
 +            subprocess.run(
 +                ["sudo", "systemctl", "start", "bluealsa"],
@@ -112,19 +88,15 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +            )
 +
 +        if not is_bluealsa_active():
-+            print("BlueALSAサービスを起動できません")
 +            status_message = "BlueALSA起動失敗"
 +            connected_bt_mac = previous_connected_mac
 +            if previous_audio_mode == "PWM":
 +                restore_pwm_after_failure()
 +            request_display_update(is_full_refresh=True)
-+            time.sleep(1.0)
-+            status_message = ""
 +            return
 +
 +        status_message = "音声デバイス待機中..."
 +        request_display_update(is_full_refresh=False)
-+
 +        if not wait_for_bluealsa_pcm(mac, timeout=10.0):
 +            print(f"BlueALSA PCMが見つかりません: {mac}")
 +            status_message = "音声デバイス未検出"
@@ -132,69 +104,112 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +            if previous_audio_mode == "PWM":
 +                restore_pwm_after_failure()
 +            request_display_update(is_full_refresh=True)
-+            time.sleep(1.0)
-+            status_message = ""
 +            return
 +
 +        config_content = build_bluealsa_asoundrc(mac)
-         old_config = None
-         config_existed = os.path.exists(asoundrc_path)
-+
-         try:
-             if config_existed:
--                with open(asoundrc_path, "r") as f:
-+                with open(asoundrc_path, "r", encoding="utf-8") as f:
-                     old_config = f.read()
--            with open(asoundrc_path, "w") as f:
--                f.write(config_content)
--            subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
-+
++        old_config = None
++        config_existed = os.path.exists(asoundrc_path)
++        try:
++            if config_existed:
++                with open(asoundrc_path, "r", encoding="utf-8") as file:
++                    old_config = file.read()
 +            write_text_atomically(asoundrc_path, config_content)
-+
 +            if asound:
 +                try:
 +                    asound.snd_config_update_free_global()
 +                except Exception as error:
 +                    print(f"ALSA設定再読み込み警告: {error}")
-+
-             audio_output_mode = "BT"
++            audio_output_mode = "BT"
 +            connected_bt_mac = mac
-             safe_init_audio()
-+
++            safe_init_audio()
 +            if not pygame.mixer.get_init():
 +                raise RuntimeError("Pygame mixerの初期化に失敗しました")
-+
 +            subprocess.run(
 +                ["amixer", "-D", "bluealsa", "sset", "Master", "100%"],
 +                check=False,
 +                timeout=5,
 +            )
-             apply_eq_settings()
-             status_message = "接続成功"
++            apply_eq_settings()
++            status_message = "接続成功"
++        except Exception as error:
++            print(f"BT ALSA設定エラー: {error}")
++            audio_output_mode = previous_audio_mode
++            connected_bt_mac = previous_connected_mac
++            status_message = "音声設定失敗"
++            try:
++                if config_existed and old_config is not None:
++                    write_text_atomically(asoundrc_path, old_config)
++                elif not config_existed and os.path.exists(asoundrc_path):
++                    os.remove(asoundrc_path)
++            except Exception as restore_error:
++                print(f"ALSA設定の復元エラー: {restore_error}")
++            if previous_audio_mode == "PWM":
++                restore_pwm_after_failure()
++    else:
++        status_message = "PIN/確認が必要です" if (not paired and requires_user_confirmation) else ("ペアリング失敗" if not paired else "接続失敗")
++        connected_bt_mac = previous_connected_mac
++        if previous_audio_mode == "PWM":
++            restore_pwm_after_failure()
 +
-         except Exception as e:
-             print(f"BT ALSA設定エラー: {e}")
++    request_display_update(is_full_refresh=True)
++    time.sleep(1.5)
++    status_message = ""
++    update_menu_items()
++    request_display_update(is_full_refresh=False)
 +
-             audio_output_mode = previous_audio_mode
-             connected_bt_mac = previous_connected_mac
++    return
 +
-             status_message = "音声設定失敗"
-+
-             try:
-                 if config_existed and old_config is not None:
++    config_content = f"""pcm.!default {{
+     type plug
+     slave.pcm "equal"
+ }}
+@@ -1330,39 +1420,6 @@ def connect_bt_device(mac, name="Unknown"):
+ ctl.equal {{
+     type equal
+ }}
+ """
+-        old_config = None
+-        config_existed = os.path.exists(asoundrc_path)
+-        try:
+-            if config_existed:
+-                with open(asoundrc_path, "r") as f:
+-                    old_config = f.read()
+-            with open(asoundrc_path, "w") as f:
+-                f.write(config_content)
+-            subprocess.run(["amixer", "-D", "bluealsa", "sset", "Master", "100%"], check=False)
+-            audio_output_mode = "BT"
+-            safe_init_audio()
+-            apply_eq_settings()
+-            status_message = "接続成功"
+-        except Exception as e:
+-            print(f"BT ALSA設定エラー: {e}")
+-            audio_output_mode = previous_audio_mode
+-            connected_bt_mac = previous_connected_mac
+-            status_message = "音声設定失敗"
+-            try:
+-                if config_existed and old_config is not None:
 -                    with open(asoundrc_path, "w") as f:
 -                        f.write(old_config)
-+                    write_text_atomically(asoundrc_path, old_config)
-                 elif not config_existed and os.path.exists(asoundrc_path):
-                     os.remove(asoundrc_path)
-             except Exception as restore_error:
-                 print(f"ALSA設定の復元エラー: {restore_error}")
-+
-             if previous_audio_mode == "PWM":
-                 restore_pwm_after_failure()
-     else:
-@@ -1390,11 +1488,28 @@ def set_audio_output(mode, mac=None):
-             status_message = ""
+-                elif not config_existed and os.path.exists(asoundrc_path):
+-                    os.remove(asoundrc_path)
+-            except Exception as restore_error:
+-                print(f"ALSA設定の復元エラー: {restore_error}")
+-            if previous_audio_mode == "PWM":
+-                restore_pwm_after_failure()
+-    else:
+-        status_message = "PIN/確認が必要です" if (not paired and requires_user_confirmation) else ("ペアリング失敗" if not paired else "接続失敗")
+-        connected_bt_mac = previous_connected_mac
+-        if previous_audio_mode == "PWM":
+-            restore_pwm_after_failure()
+-
+-    request_display_update(is_full_refresh=True)
+-    time.sleep(1.5)
+-    status_message = ""
+-    update_menu_items()
+-    request_display_update(is_full_refresh=False)
+ 
+ def set_audio_output(mode, mac=None):
+@@ -1390,6 +1447,19 @@ def set_audio_output(mode, mac=None):
  
      elif mode == "PWM":
 +        try:
@@ -203,7 +218,6 @@ diff --git a/dap_daemon.py b/dap_daemon.py
 +                pygame.mixer.quit()
 +        except Exception as error:
 +            print(f"Audio shutdown warning: {error}")
-+
 +        if asound:
 +            try:
 +                asound.snd_config_update_free_global()
