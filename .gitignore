@@ -4,3 +4,10 @@ __pycache__/
 .DS_Store
 waveshare_epd/
 
+
+# Runtime state and local backups
+favorites.json
+play_data.json
+resume.json
+settings.json
+dap_daemon.py.backup*
