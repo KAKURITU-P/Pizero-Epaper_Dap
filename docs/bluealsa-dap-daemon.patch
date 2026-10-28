@@ -215,4 +215,3 @@ diff --git a/dap_daemon.py b/dap_daemon.py
          subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
 -        time.sleep(0.3)
 +        time.sleep(0.5)
-*** End Patch
