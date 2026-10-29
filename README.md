@@ -197,3 +197,6 @@ aplay -L | grep -i bluealsa
 ```bash
 sudo apt update
 sudo apt install -y bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal
+
+
+Raspbian Trixie の標準 BlueALSA は SBC のみです。AAC 対応ビルドの導入と標準版への戻し方は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。
