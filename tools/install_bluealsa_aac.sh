@@ -6,9 +6,10 @@ PREFIX="/opt/dap-bluealsa-aac"
 BLUEALSA_VERSION="v4.3.1"
 FDK_AAC_VERSION="v2.0.3"
 OVERRIDE="/etc/systemd/system/bluealsa.service.d/10-dap-aac.conf"
-BUILD_DIR="$(mktemp -d /var/tmp/dap-bluealsa-aac.XXXXXX)"
+BUILD_DIR="$HOME/.cache/dap-bluealsa-aac-build"
 OVERRIDE_INSTALLED=0
 SUDO_KEEPALIVE_PID=""
+BUILD_SUCCEEDED=0
 LOG_FILE="$HOME/bluealsa-aac-install.log"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -18,9 +19,14 @@ cleanup() {
     if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
         kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     fi
-    rm -rf -- "$BUILD_DIR"
+    if [[ "$BUILD_SUCCEEDED" -eq 1 ]]; then
+        rm -rf -- "$BUILD_DIR"
+    else
+        echo "Build workspace retained for retry: $BUILD_DIR"
+    fi
 }
 trap cleanup EXIT
+mkdir -p "$BUILD_DIR"
 
 if [[ "${EUID}" -eq 0 ]]; then
     echo "Run as the normal DAP user; this script uses sudo for system installation."
@@ -51,8 +57,13 @@ sudo apt-get install -y \
     pkg-config
 
 echo "Building FDK-AAC ${FDK_AAC_VERSION}..."
-git clone --depth 1 --branch "$FDK_AAC_VERSION" \
-    https://github.com/mstorsjo/fdk-aac.git "$BUILD_DIR/fdk-aac"
+if [[ ! -d "$BUILD_DIR/fdk-aac/.git" ]]; then
+    rm -rf -- "$BUILD_DIR/fdk-aac"
+    git clone --depth 1 --branch "$FDK_AAC_VERSION" \
+        https://github.com/mstorsjo/fdk-aac.git "$BUILD_DIR/fdk-aac"
+else
+    echo "Reusing cached FDK-AAC source and objects."
+fi
 (
     cd "$BUILD_DIR/fdk-aac"
     autoreconf -fiv
@@ -62,8 +73,13 @@ git clone --depth 1 --branch "$FDK_AAC_VERSION" \
 )
 
 echo "Building BlueALSA ${BLUEALSA_VERSION} with SBC and AAC..."
-git clone --depth 1 --branch "$BLUEALSA_VERSION" \
-    https://github.com/Arkq/bluez-alsa.git "$BUILD_DIR/bluez-alsa"
+if [[ ! -d "$BUILD_DIR/bluez-alsa/.git" ]]; then
+    rm -rf -- "$BUILD_DIR/bluez-alsa"
+    git clone --depth 1 --branch "$BLUEALSA_VERSION" \
+        https://github.com/Arkq/bluez-alsa.git "$BUILD_DIR/bluez-alsa"
+else
+    echo "Reusing cached BlueALSA source and objects."
+fi
 (
     cd "$BUILD_DIR/bluez-alsa"
     autoreconf --install --force
@@ -109,3 +125,4 @@ fi
 echo "BlueALSA is active. Report the output of: bluealsa-cli status"
 bluealsa-cli status
 echo "To restore the distro version: sudo bash /home/pi/dap/tools/remove_bluealsa_aac.sh"
+BUILD_SUCCEEDED=1

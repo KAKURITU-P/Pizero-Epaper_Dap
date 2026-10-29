@@ -13,7 +13,7 @@ cd /home/pi/dap
 bash tools/install_bluealsa_aac.sh
 ```
 
-SSH が切れたら再接続し、`tmux attach -t bluealsa-aac` で戻ります。ログは `/home/pi/bluealsa-aac-install.log` にも追記されます。実行中に tmux を抜けるには `Ctrl+B` のあと `d` を押します。
+SSH が切れたら再接続し、`tmux attach -t bluealsa-aac` で戻ります。ログは `/home/pi/bluealsa-aac-install.log` にも追記されます。実行中に tmux を抜けるには `Ctrl+B` のあと `d` を押します。失敗や中断時は `~/.cache/dap-bluealsa-aac-build` にビルド中のファイルを残し、再実行時に再利用します。正常完了時だけこのディレクトリを削除します。
 
 ビルド後、次の出力に `A2DP-source : SBC AAC` が含まれることを確認してください。
 
