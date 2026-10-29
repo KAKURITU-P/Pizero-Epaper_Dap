@@ -109,6 +109,15 @@ rollback_override() {
 }
 
 sudo systemctl daemon-reload
+EFFECTIVE_EXEC_START="$(sudo systemctl show bluealsa -p ExecStart --value)"
+if [[ "$EFFECTIVE_EXEC_START" != *"$PREFIX/bin/bluealsa"* ]]; then
+    echo "Another systemd drop-in overrides the AAC BlueALSA executable:"
+    echo "$EFFECTIVE_EXEC_START"
+    echo "Inspect 'systemctl cat bluealsa' and disable the conflicting ExecStart drop-in."
+    rollback_override
+    exit 1
+fi
+
 if ! sudo systemctl restart bluealsa; then
     echo "AAC-enabled BlueALSA failed to restart; restoring the distro service."
     rollback_override
@@ -122,7 +131,13 @@ if ! sudo systemctl is-active --quiet bluealsa; then
     exit 1
 fi
 
-echo "BlueALSA is active. Report the output of: bluealsa-cli status"
-bluealsa-cli status
+echo "BlueALSA is active. Checking that AAC is advertised..."
+BLUEALSA_STATUS="$(bluealsa-cli status)"
+printf '%s\n' "$BLUEALSA_STATUS"
+if ! grep -Eq 'A2DP-source[[:space:]]*:[[:space:]].*AAC' <<<"$BLUEALSA_STATUS"; then
+    echo "AAC is not advertised; restoring the previous BlueALSA service."
+    rollback_override
+    exit 1
+fi
 echo "To restore the distro version: sudo bash /home/pi/dap/tools/remove_bluealsa_aac.sh"
 BUILD_SUCCEEDED=1
