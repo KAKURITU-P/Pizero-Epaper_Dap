@@ -21,7 +21,7 @@ class BlueAlsaUtilsTest(unittest.TestCase):
     def test_build_asoundrc_uses_explicit_a2dp_device(self):
         config = build_bluealsa_asoundrc(self.MAC)
         self.assertIn('type bluealsa', config)
-        self.assertIn('interface "hci0"', config)
+        self.assertNotIn("interface", config)
         self.assertIn('device "AA:BB:CC:DD:EE:FF"', config)
         self.assertIn('profile "a2dp"', config)
         self.assertIn('slave.pcm "equal"', config)
