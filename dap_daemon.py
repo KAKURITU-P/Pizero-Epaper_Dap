@@ -1564,14 +1564,25 @@ def toggle_rfkill(dev_type):
                     subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
                     time.sleep(0.3)
                 subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
+                bt_start = subprocess.run(
+                    ["sudo", "systemctl", "start", "bluetooth"],
+                    capture_output=True, text=True, check=False, timeout=10,
+                )
+                bt_service = subprocess.run(
+                    ["sudo", "systemctl", "is-active", "bluetooth"],
+                    capture_output=True, text=True, check=False, timeout=5,
+                )
                 new_wifi_on, new_bt_on = get_rfkill_status()
-                if new_bt_on or (wifi_on and new_wifi_on):
+                service_active = bt_service.returncode == 0 and bt_service.stdout.strip() == "active"
+                if bt_start.returncode != 0 or not service_active or new_bt_on or (wifi_on and new_wifi_on):
+                    if not service_active:
+                        print(f"Bluetoothサービス起動失敗: {(bt_start.stderr or bt_service.stderr).strip()}")
                     if new_bt_on:
                         subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
                     if wifi_on:
                         subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
                     bt_previous_wifi_on = None
-                    status_message = "無線切替に失敗"
+                    status_message = "BT起動失敗" if not service_active else "無線切替に失敗"
                     request_display_update(is_full_refresh=False)
                     time.sleep(1.0)
                     status_message = ""

@@ -23,6 +23,8 @@ Cmnd_Alias DAP_SYSTEMCTL = \
     /usr/bin/systemctl start bluealsa, \
     /usr/bin/systemctl stop bluealsa, \
     /usr/bin/systemctl restart bluealsa, \
+    /usr/bin/systemctl start bluetooth, \
+    /usr/bin/systemctl is-active bluetooth, \
     /usr/bin/systemctl restart dap, \
     /usr/bin/systemctl restart dap.service, \
     /usr/bin/systemctl stop NetworkManager, \

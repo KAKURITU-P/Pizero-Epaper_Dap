@@ -151,7 +151,7 @@ Bluetooth と Wi-Fi は同時に有効にしない運用です。「Bluetooth機
 
 ### DAP操作時のsudoパスワード
 
-`setup.sh` は、DAPサービスが使用する無線切替・BlueALSA制御・アプリ再起動などに限り、パスワードなしでsudoを実行できる設定を `/etc/sudoers.d/dap` に追加します。SSHでの一般的な管理コマンド（パッケージ更新など）には引き続きパスワードが必要です。既存環境では次を一度実行してください。
+`setup.sh` は、DAPサービスが使用する無線切替・Bluetooth/BlueALSA制御・アプリ再起動などに限り、パスワードなしでsudoを実行できる設定を `/etc/sudoers.d/dap` に追加します。SSHでの一般的な管理コマンド（パッケージ更新など）には引き続きパスワードが必要です。既存環境は、コード更新後に新しい権限設定を反映するため次を実行してください。
 
 ```bash
 sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh
