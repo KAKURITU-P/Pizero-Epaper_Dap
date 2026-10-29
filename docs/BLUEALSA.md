@@ -5,6 +5,7 @@
 - MACアドレスを検証・正規化
 - `bluealsa:DEV=<MAC>,PROFILE=a2dp` 形式のPCM名を生成
 - 既存の `equal` PCMを維持した `.asoundrc` 設定を生成
+- EQ と BlueALSA PCM の間に ALSA `plug` を挟み、再生形式と A2DP のサンプルレート差を変換
 - BlueALSA PCM一覧から対象機器の有無を判定
 
 今回のコミットでは、APモード、DAFS/Web機能、自動Bluetooth再接続、PIN入力は変更していません。

@@ -60,9 +60,12 @@ def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
 pcm.equal {{
     type equal
     slave.pcm {{
-        type bluealsa
-        device "{normalized}"
-        profile "a2dp"
+        type plug
+        slave.pcm {{
+            type bluealsa
+            device "{normalized}"
+            profile "a2dp"
+        }}
     }}
 }}
 
