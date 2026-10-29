@@ -1874,12 +1874,18 @@ def get_bt_paired_devices():
     devs.sort(key=lambda item: item[1].lower())
     return devs
 
-def trigger_bt_scan():
+def trigger_bt_scan(state_lock_held=False):
     global is_bt_scanning, bt_scanned_devices
-    with state_lock:
+    if state_lock_held:
+        # The button handler already holds the non-reentrant state_lock.
         if is_bt_scanning:
             return
         is_bt_scanning = True
+    else:
+        with state_lock:
+            if is_bt_scanning:
+                return
+            is_bt_scanning = True
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
         scanned = []
@@ -2342,7 +2348,7 @@ def on_btn_menu_or_select():
 
                 elif current_screen == "MENU_BT_SCAN":
                     if selected == "検索開始":
-                        trigger_bt_scan()
+                        trigger_bt_scan(state_lock_held=True)
                     elif selected.startswith("ペアリング:"):
                         chosen_idx = cursor_idx - 2
                         if 0 <= chosen_idx < len(bt_scanned_devices):
