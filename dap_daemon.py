@@ -1455,23 +1455,23 @@ def set_audio_output(mode, mac=None):
     request_display_update(is_full_refresh=False)
 
     if mode == "BT":
-        # Wi-Fiは利用者が明示的にOFFにしてから接続する。接続失敗時に
-        # 元の状態を復元できなくなるため、ここでは勝手にrfkillを変更しない。
-        wifi_on, _ = get_rfkill_status()
-        if wifi_on:
-            status_message = "先にWi-FiをOFFにしてください"
-            request_display_update(is_full_refresh=False)
-            time.sleep(1.0)
-            status_message = ""
-            return
+        # Bluetooth接続中はWi-Fiを切り、失敗した場合だけ元の状態へ戻す。
+        wifi_was_on, _ = get_rfkill_status()
+        if wifi_was_on:
+            subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+            time.sleep(0.3)
         target_mac = mac or connected_bt_mac
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
+            if wifi_was_on and audio_output_mode != "BT":
+                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
         else:
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
             time.sleep(1.0)
             status_message = ""
+            if wifi_was_on:
+                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
 
     elif mode == "PWM":
         try:
