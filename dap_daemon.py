@@ -1539,7 +1539,8 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBluetoothを同時に有効化しない"""
+    """Wi-FiとBluetoothを排他的に切り替え、BT終了時はWi-Fi状態を戻す。"""
+    global bt_previous_wifi_on, status_message
     wifi_on, bt_on = get_rfkill_status()
     try:
         if dev_type == "wifi":
@@ -1554,15 +1555,38 @@ def toggle_rfkill(dev_type):
             if bt_on:
                 subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
                 subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-            elif wifi_on:
-                print("Bluetoothを有効化できません: 先にWi-FiをOFFにしてください")
-                return
+                if bt_previous_wifi_on:
+                    subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+                bt_previous_wifi_on = None
             else:
+                bt_previous_wifi_on = wifi_on
+                if wifi_on:
+                    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                    time.sleep(0.3)
                 subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
+                new_wifi_on, new_bt_on = get_rfkill_status()
+                if new_bt_on or (wifi_on and new_wifi_on):
+                    if new_bt_on:
+                        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
+                    if wifi_on:
+                        subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+                    bt_previous_wifi_on = None
+                    status_message = "無線切替に失敗"
+                    request_display_update(is_full_refresh=False)
+                    time.sleep(1.0)
+                    status_message = ""
+                    request_display_update(is_full_refresh=False)
+                elif wifi_on:
+                    status_message = "Wi-Fi OFF / BT ON"
+                    request_display_update(is_full_refresh=False)
+                    time.sleep(1.0)
+                    status_message = ""
+                    request_display_update(is_full_refresh=False)
         time.sleep(0.3)
     except Exception as e:
         print(f"[toggle_rfkill] Error: {e}")
 
+bt_previous_wifi_on = None
 ap_previous_wifi_on = None
 
 

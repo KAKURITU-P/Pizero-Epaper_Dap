@@ -138,7 +138,7 @@ python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/wavesh
 
 ### Bluetoothイヤホンの登録と接続
 
-Bluetooth と Wi-Fi は同時に有効にしない運用です。Wi-Fi 経由で接続中の場合は、先に「接続設定」→「Wi-Fi設定」→「Wi-Fi機能」を OFF にしてください。Wi-Fi を OFF にすると SSH 接続も切れるため、以降は本体のボタンで操作します。BT 接続操作が Wi-Fi を勝手に切り替えることはありません。
+Bluetooth と Wi-Fi は同時に有効にしない運用です。「Bluetooth機能」を ON にすると Wi-Fi が自動で OFF になります。Wi-Fi 経由の SSH 接続も切れるため、以降は本体のボタンで操作してください。Bluetooth を OFF に戻すと、Bluetooth を ON にする前の Wi-Fi 状態に戻ります。
 
 初めて使うイヤホンは、次の順で登録します。
 
