@@ -4,12 +4,16 @@
 
 `tools/install_bluealsa_aac.sh` は、Pi 上で FDK-AAC v2.0.3 と BlueALSA v4.3.1 をビルドし、`/opt/dap-bluealsa-aac` に隔離して導入します。既存の Raspbian パッケージは削除・上書きしません。systemd の drop-in で `bluealsa.service` の起動先を切り替えるため、DAP からのサービス操作は従来どおりです。インストール中にサービスを再起動するため、接続中のイヤホンはいったん切断されます。
 
-Pi の SSH で実行します。
+Pi で SSH が切れてもビルドが続き、あとから出力を確認できるよう、`tmux` セッションで実行します。
 
 ```bash
+sudo apt-get install -y tmux
+tmux new -s bluealsa-aac
 cd /home/pi/dap
 bash tools/install_bluealsa_aac.sh
 ```
+
+SSH が切れたら再接続し、`tmux attach -t bluealsa-aac` で戻ります。ログは `/home/pi/bluealsa-aac-install.log` にも追記されます。実行中に tmux を抜けるには `Ctrl+B` のあと `d` を押します。
 
 ビルド後、次の出力に `A2DP-source : SBC AAC` が含まれることを確認してください。
 

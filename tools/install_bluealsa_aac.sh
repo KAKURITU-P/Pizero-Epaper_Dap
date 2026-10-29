@@ -8,8 +8,18 @@ FDK_AAC_VERSION="v2.0.3"
 OVERRIDE="/etc/systemd/system/bluealsa.service.d/10-dap-aac.conf"
 BUILD_DIR="$(mktemp -d /var/tmp/dap-bluealsa-aac.XXXXXX)"
 OVERRIDE_INSTALLED=0
+SUDO_KEEPALIVE_PID=""
+LOG_FILE="$HOME/bluealsa-aac-install.log"
 
-cleanup() { rm -rf -- "$BUILD_DIR"; }
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "Build log: $LOG_FILE"
+
+cleanup() {
+    if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    fi
+    rm -rf -- "$BUILD_DIR"
+}
 trap cleanup EXIT
 
 if [[ "${EUID}" -eq 0 ]]; then
@@ -24,6 +34,15 @@ if [[ -e "$OVERRIDE" ]]; then
     echo "Refusing to overwrite existing systemd drop-in: $OVERRIDE"
     exit 1
 fi
+
+sudo -v
+(
+    while kill -0 "$$" 2>/dev/null; do
+        sudo -n -v || exit
+        sleep 60
+    done
+) &
+SUDO_KEEPALIVE_PID=$!
 
 sudo apt-get update
 sudo apt-get install -y \
