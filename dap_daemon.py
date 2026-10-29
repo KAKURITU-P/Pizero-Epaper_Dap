@@ -1268,7 +1268,8 @@ def connect_bt_device(mac, name="Unknown"):
 
     def restore_pwm_after_failure():
         global audio_output_mode
-        subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
+        # 音声初期化が失敗しても、接続確認と追加診断ができるよう
+        # BlueALSAとBluetooth接続は維持したまま再生先だけPWMへ戻す。
         subprocess.run(["sudo", "rfkill", "unblock" if initial_bt_on else "block", "bluetooth"], check=False)
         audio_output_mode = "PWM"
         safe_init_audio()
@@ -1569,7 +1570,7 @@ def toggle_rfkill(dev_type):
                 service_active = service.returncode == 0 and service.stdout.strip() == "active"
                 success = unblock.returncode == 0 and start.returncode == 0 and service_active and new_bt_on
                 if success:
-                    status_message = "BT ON"
+                    status_message = ""
                 else:
                     details = (start.stderr or service.stderr or unblock.stderr or "").strip()
                     print(f"Bluetooth有効化失敗: rfkill={new_bt_on}, service={service.stdout.strip()}, {details}")
