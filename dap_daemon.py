@@ -700,27 +700,47 @@ def get_bt_codec_info():
     if not connected_bt_mac:
         return "未接続"
 
-    mac_path_part = connected_bt_mac.replace(":", "_").lower()
-    pcm_path = f"/org/bluealsa/hci0/dev_{mac_path_part}/a2dpsrc/sink"
-
     try:
-        res = subprocess.check_output(
+        tree = subprocess.check_output(
             [
-                "busctl", "--system", "get-property",
-                "org.bluealsa", pcm_path,
-                "org.bluealsa.PCM1", "Codec",
+                "busctl", "--system", "tree", "org.bluealsa",
             ],
             text=True,
             errors="ignore",
             timeout=3.0,
         )
 
+        mac_path_part = connected_bt_mac.replace(":", "_").lower()
+        expected_device_path = f"/dev_{mac_path_part}/"
+        pcm_paths = []
+        for line in tree.splitlines():
+            match = re.search(r"(/org/bluealsa(?:/[A-Za-z0-9_]+)+)", line)
+            if not match:
+                continue
+            path = match.group(1)
+            if expected_device_path in path.lower() and path.lower().endswith("/a2dpsrc/sink"):
+                pcm_paths.append(path)
+
+        if not pcm_paths:
+            return "A2DP待機中"
+
         # busctl prints string properties as: s "SBC"
-        value_type, _, value = res.strip().partition(" ")
-        if value_type == "s" and value.strip().startswith('"') and value.strip().endswith('"'):
-            codec = value.strip()[1:-1].strip()
-            if codec:
-                return codec.upper()
+        for pcm_path in pcm_paths:
+            res = subprocess.check_output(
+                [
+                    "busctl", "--system", "get-property",
+                    "org.bluealsa", pcm_path,
+                    "org.bluealsa.PCM1", "Codec",
+                ],
+                text=True,
+                errors="ignore",
+                timeout=3.0,
+            )
+            value_type, _, value = res.strip().partition(" ")
+            if value_type == "s" and value.strip().startswith('"') and value.strip().endswith('"'):
+                codec = value.strip()[1:-1].strip()
+                if codec:
+                    return codec.upper()
 
     except (subprocess.SubprocessError, OSError) as error:
         print(f"BTコーデック取得エラー: {error}")
