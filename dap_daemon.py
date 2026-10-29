@@ -102,14 +102,13 @@ if os.path.exists(asoundrc_path):
 else:
     audio_output_mode = "PWM"
 
-# 起動時もWi-FiとBluetoothを同時に有効化しない
+# オーディオ経路は選択状態に合わせる。Wi-Fi / Bluetooth 無線状態は変更しない。
 if audio_output_mode == "BT":
-    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
     subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
+    subprocess.run(["sudo", "systemctl", "start", "bluetooth"], check=False)
     subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
 else:
     subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-    subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
 
 # --- ALSA Cライブラリ読み込み ---
 try:
@@ -1262,12 +1261,7 @@ def connect_bt_device(mac, name="Unknown"):
         return
     mac = mac.upper()
 
-    initial_wifi_on, initial_bt_on = get_rfkill_status()
-    if initial_wifi_on:
-        print("BT接続を中止: Wi-Fiが有効です")
-        status_message = "先にWi-FiをOFFにしてください"
-        request_display_update(is_full_refresh=False)
-        return
+    _, initial_bt_on = get_rfkill_status()
 
     previous_audio_mode = audio_output_mode
     previous_connected_mac = connected_bt_mac
@@ -1275,7 +1269,6 @@ def connect_bt_device(mac, name="Unknown"):
     def restore_pwm_after_failure():
         global audio_output_mode
         subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-        subprocess.run(["sudo", "rfkill", "unblock" if initial_wifi_on else "block", "wlan"], check=False)
         subprocess.run(["sudo", "rfkill", "unblock" if initial_bt_on else "block", "bluetooth"], check=False)
         audio_output_mode = "PWM"
         safe_init_audio()
@@ -1455,23 +1448,14 @@ def set_audio_output(mode, mac=None):
     request_display_update(is_full_refresh=False)
 
     if mode == "BT":
-        # Bluetooth接続中はWi-Fiを切り、失敗した場合だけ元の状態へ戻す。
-        wifi_was_on, _ = get_rfkill_status()
-        if wifi_was_on:
-            subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
-            time.sleep(0.3)
         target_mac = mac or connected_bt_mac
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
-            if wifi_was_on and audio_output_mode != "BT":
-                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
         else:
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
             time.sleep(1.0)
             status_message = ""
-            if wifi_was_on:
-                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
 
     elif mode == "PWM":
         try:
@@ -1487,9 +1471,8 @@ def set_audio_output(mode, mac=None):
             except Exception:
                 pass
 
-        # PWMへ戻す前にBlueALSAとBluetooth無線を停止する。
+        # PWMへ戻すときはBlueALSA音声だけ停止し、Bluetooth無線状態は維持する。
         subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
         time.sleep(0.5)
 
         pwm_config = """pcm.!default {
@@ -1539,65 +1522,64 @@ def get_rfkill_status():
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
-    """Wi-FiとBluetoothを排他的に切り替え、BT終了時はWi-Fi状態を戻す。"""
-    global bt_previous_wifi_on, status_message
+    """Wi-Fi / Bluetooth の無線状態を互いに独立して切り替える。"""
+    global status_message
     wifi_on, bt_on = get_rfkill_status()
     try:
         if dev_type == "wifi":
-            if wifi_on:
-                subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
-            elif bt_on:
-                print("Wi-Fiを有効化できません: 先にBluetoothをOFFにしてください")
-                return
-            else:
-                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+            action = "block" if wifi_on else "unblock"
+            result = subprocess.run(
+                ["sudo", "rfkill", action, "wlan"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            new_wifi_on, _ = get_rfkill_status()
+            success = result.returncode == 0 and new_wifi_on != wifi_on
+            status_message = ("Wi-Fi OFF" if not new_wifi_on else "Wi-Fi ON") if success else "Wi-Fi切替失敗"
         else:
             if bt_on:
-                subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
-                subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-                if bt_previous_wifi_on:
-                    subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
-                bt_previous_wifi_on = None
+                audio_was_bt = audio_output_mode == "BT"
+                if audio_was_bt:
+                    set_audio_output("PWM")
+                else:
+                    subprocess.run(
+                        ["sudo", "systemctl", "stop", "bluealsa"],
+                        capture_output=True, text=True, check=False, timeout=10,
+                    )
+                result = subprocess.run(
+                    ["sudo", "rfkill", "block", "bluetooth"],
+                    capture_output=True, text=True, check=False, timeout=10,
+                )
+                _, new_bt_on = get_rfkill_status()
+                success = result.returncode == 0 and not new_bt_on
+                status_message = "BT OFF" if success else "BT無効化失敗"
             else:
-                bt_previous_wifi_on = wifi_on
-                if wifi_on:
-                    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
-                    time.sleep(0.3)
-                subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
-                bt_start = subprocess.run(
+                unblock = subprocess.run(
+                    ["sudo", "rfkill", "unblock", "bluetooth"],
+                    capture_output=True, text=True, check=False, timeout=10,
+                )
+                start = subprocess.run(
                     ["sudo", "systemctl", "start", "bluetooth"],
                     capture_output=True, text=True, check=False, timeout=10,
                 )
-                bt_service = subprocess.run(
+                service = subprocess.run(
                     ["sudo", "systemctl", "is-active", "bluetooth"],
                     capture_output=True, text=True, check=False, timeout=5,
                 )
-                new_wifi_on, new_bt_on = get_rfkill_status()
-                service_active = bt_service.returncode == 0 and bt_service.stdout.strip() == "active"
-                if bt_start.returncode != 0 or not service_active or new_bt_on or (wifi_on and new_wifi_on):
-                    if not service_active:
-                        print(f"Bluetoothサービス起動失敗: {(bt_start.stderr or bt_service.stderr).strip()}")
-                    if new_bt_on:
-                        subprocess.run(["sudo", "rfkill", "block", "bluetooth"], check=False)
-                    if wifi_on:
-                        subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
-                    bt_previous_wifi_on = None
-                    status_message = "BT起動失敗" if not service_active else "無線切替に失敗"
-                    request_display_update(is_full_refresh=False)
-                    time.sleep(1.0)
-                    status_message = ""
-                    request_display_update(is_full_refresh=False)
-                elif wifi_on:
-                    status_message = "Wi-Fi OFF / BT ON"
-                    request_display_update(is_full_refresh=False)
-                    time.sleep(1.0)
-                    status_message = ""
-                    request_display_update(is_full_refresh=False)
+                _, new_bt_on = get_rfkill_status()
+                service_active = service.returncode == 0 and service.stdout.strip() == "active"
+                success = unblock.returncode == 0 and start.returncode == 0 and service_active and new_bt_on
+                if success:
+                    status_message = "BT ON"
+                else:
+                    details = (start.stderr or service.stderr or unblock.stderr or "").strip()
+                    print(f"Bluetooth有効化失敗: rfkill={new_bt_on}, service={service.stdout.strip()}, {details}")
+                    status_message = "BT起動失敗" if not service_active else "BT無線切替失敗"
+        request_display_update(is_full_refresh=False)
         time.sleep(0.3)
     except Exception as e:
+        status_message = f"{dev_type.upper()}切替エラー"
         print(f"[toggle_rfkill] Error: {e}")
-
-bt_previous_wifi_on = None
+        request_display_update(is_full_refresh=False)
 ap_previous_wifi_on = None
 
 
@@ -1613,13 +1595,6 @@ def toggle_ap_mode():
     def _do_toggle():
         global status_message, ap_previous_wifi_on
         is_active = get_ap_status()
-        if not is_active:
-            _, bt_on = get_rfkill_status()
-            if bt_on:
-                print("APモードを中止: 先にBluetoothをOFFにしてください")
-                status_message = "先にBluetoothをOFFにしてください"
-                request_display_update(is_full_refresh=False)
-                return
         try:
             if is_active:
                 status_message = "AP OFF中..."
@@ -1778,10 +1753,6 @@ def connect_to_wifi(target):
         if not target_ssid:
             return
 
-        _, bt_on = get_rfkill_status()
-        if bt_on:
-            print("Wi-Fi接続を中止: 先にBluetoothをOFFにしてください")
-            return
         status_message = f"接続中: {target_ssid}"
         request_display_update(is_full_refresh=False)
         try:
@@ -1890,14 +1861,6 @@ def trigger_bt_scan():
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
         scanned = []
-        wifi_on, _ = get_rfkill_status()
-        if wifi_on:
-            print("BT検索を中止: Wi-Fiが有効です")
-            status_message = "先にWi-FiをOFFにしてください"
-            with state_lock:
-                is_bt_scanning = False
-            request_display_update(is_full_refresh=False)
-            return
         status_message = "BT検索中(8秒)..."
         request_display_update(is_full_refresh=False)
         try:

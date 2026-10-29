@@ -9,7 +9,7 @@ diff --git a/README.md b/README.md
 +
 +Bluetooth機器の接続は手動操作です。起動時の自動接続、切断後のバックグラウンド自動再接続、PIN入力には対応していません。
 +
-+Bluetooth出力へ切り替える場合は、Wi-Fiを先にOFFにしてください。本プロジェクトでは、BluetoothとWi-Fiを同時に有効化しない既存方針を維持しています。
++Bluetooth出力とWi-Fiは同時に利用できます。2.4 GHz帯の混雑時は音切れが起きる場合があるため、その場合は5 GHz Wi-Fiを使うか、Wi-Fiを一時的にOFFにしてください。
 +
 +実機では、次のコマンドでBlueALSAの状態を確認できます。
 +
