@@ -1941,8 +1941,10 @@ def trigger_bt_scan():
     threading.Thread(target=_scan_thread, daemon=True).start()
 
 def get_bt_scanned_devices_snapshot():
-    with state_lock:
-        return list(bt_scanned_devices)
+    # The scan worker replaces this list atomically instead of mutating it.
+    # Do not acquire state_lock here: update_menu_items() can be called from
+    # on_btn_menu_or_select() while that same non-reentrant lock is held.
+    return list(bt_scanned_devices)
 
 def update_menu_items(reset_cursor=True):
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
