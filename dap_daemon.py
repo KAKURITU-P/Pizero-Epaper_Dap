@@ -1455,9 +1455,15 @@ def set_audio_output(mode, mac=None):
     request_display_update(is_full_refresh=False)
 
     if mode == "BT":
-        # BTへ切り替えるとWi-Fi接続が切れる。BT開始前にWi-Fiを停止する。
-        subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
-        time.sleep(0.3)
+        # Wi-Fiは利用者が明示的にOFFにしてから接続する。接続失敗時に
+        # 元の状態を復元できなくなるため、ここでは勝手にrfkillを変更しない。
+        wifi_on, _ = get_rfkill_status()
+        if wifi_on:
+            status_message = "先にWi-FiをOFFにしてください"
+            request_display_update(is_full_refresh=False)
+            time.sleep(1.0)
+            status_message = ""
+            return
         target_mac = mac or connected_bt_mac
         if target_mac:
             connect_bt_device(target_mac, "Bluetooth")
@@ -1557,21 +1563,27 @@ def toggle_rfkill(dev_type):
     except Exception as e:
         print(f"[toggle_rfkill] Error: {e}")
 
+ap_previous_wifi_on = None
+
+
 def get_ap_status():
     try:
-        res = subprocess.run(["pgrep", "-f", "hostapd"], capture_output=True, text=True)
+        # AP is launched with hostapd -B rather than through systemd.
+        res = subprocess.run(["pgrep", "-x", "hostapd"], capture_output=True, text=True)
         return res.returncode == 0
     except Exception:
         return False
 
 def toggle_ap_mode():
     def _do_toggle():
-        global status_message
+        global status_message, ap_previous_wifi_on
         is_active = get_ap_status()
         if not is_active:
             _, bt_on = get_rfkill_status()
             if bt_on:
                 print("APモードを中止: 先にBluetoothをOFFにしてください")
+                status_message = "先にBluetoothをOFFにしてください"
+                request_display_update(is_full_refresh=False)
                 return
         try:
             if is_active:
@@ -1580,11 +1592,19 @@ def toggle_ap_mode():
 
                 subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
                 subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
+                subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
+                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
                 subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
+                if ap_previous_wifi_on is False:
+                    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                ap_previous_wifi_on = None
 
             else:
                 status_message = "AP ON中..."
                 request_display_update(is_full_refresh=False)
+
+                ap_previous_wifi_on, _ = get_rfkill_status()
 
                 subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
                 subprocess.run(["sudo", "pkill", "-TERM", "wpa_supplicant"], check=False)
@@ -1599,16 +1619,54 @@ def toggle_ap_mode():
                 time.sleep(0.5)
 
                 dnsmasq_conf = """interface=wlan0
-                dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
-                dhcp-option=option:router,192.168.4.1
-                dhcp-option=option:dns-server,192.168.4.1
-                bind-interfaces
-                """
-                with open("/tmp/dnsmasq_ap.conf", "w") as f:
+dhcp-range=192.168.4.10,192.168.4.50,255.255.255.0,12h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+bind-interfaces
+"""
+                with open("/tmp/dnsmasq_ap.conf", "w", encoding="utf-8") as f:
                     f.write(dnsmasq_conf)
 
-                subprocess.run(["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"], check=False)
-                subprocess.Popen(["sudo", "hostapd", "-B", "/etc/hostapd/hostapd.conf"])
+                ap_config_path = os.path.join(BASE_DIR, "ap_config.json")
+                try:
+                    with open(ap_config_path, "r", encoding="utf-8") as f:
+                        ap_config = json.load(f)
+                except (OSError, json.JSONDecodeError) as error:
+                    raise RuntimeError(f"AP設定を読めません: {error}")
+                ssid = str(ap_config.get("ssid", "PiZero-DAP")).strip()
+                password = str(ap_config.get("password", "dap-connect-1234"))
+                country = str(ap_config.get("country", "JP")).strip().upper()
+                channel = int(ap_config.get("channel", 6))
+                if not 1 <= len(ssid.encode("utf-8")) <= 32 or "\n" in ssid or "\r" in ssid:
+                    raise ValueError("AP SSIDはUTF-8で1〜32バイトにしてください")
+                if not 8 <= len(password) <= 63 or any(ord(char) < 32 or ord(char) > 126 for char in password):
+                    raise ValueError("APパスワードは印字可能なASCIIで8〜63文字にしてください")
+                if not re.fullmatch(r"[A-Z]{2}", country) or not 1 <= channel <= 13:
+                    raise ValueError("APのcountry/channel設定が不正です")
+                hostapd_conf = (
+                    "interface=wlan0\ndriver=nl80211\n"
+                    f"country_code={country}\nssid={ssid}\n"
+                    f"hw_mode=g\nchannel={channel}\nwpa=2\n"
+                    f"wpa_passphrase={password}\n"
+                    "wpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n"
+                )
+                with open("/tmp/dap_hostapd.conf", "w", encoding="utf-8") as f:
+                    f.write(hostapd_conf)
+                os.chmod("/tmp/dap_hostapd.conf", 0o600)
+
+                dns_result = subprocess.run(
+                    ["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"],
+                    check=False, capture_output=True, text=True,
+                )
+                if dns_result.returncode != 0:
+                    raise RuntimeError(f"dnsmasq起動失敗: {dns_result.stderr.strip()}")
+                hostapd_result = subprocess.run(
+                    ["sudo", "hostapd", "-B", "/tmp/dap_hostapd.conf"],
+                    check=False, capture_output=True, text=True,
+                )
+                if hostapd_result.returncode != 0:
+                    subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
+                    raise RuntimeError(f"hostapd起動失敗: {hostapd_result.stderr.strip()}")
 
             time.sleep(1)
             subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
@@ -1619,6 +1677,18 @@ def toggle_ap_mode():
 
         except Exception as e:
             print(f"AP Mode toggle error: {e}")
+            if not is_active:
+                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
+                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
+                subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
+                subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
+                if ap_previous_wifi_on is False:
+                    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                ap_previous_wifi_on = None
+                subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
+            status_message = "APモード失敗"
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
 
     threading.Thread(target=_do_toggle, daemon=True).start()
 

@@ -40,7 +40,7 @@ Cmnd_Alias DAP_NETWORK = \
     /usr/sbin/ip link set wlan0 up, \
     /usr/sbin/ip addr add 192.168.4.1/24 dev wlan0, \
     /usr/sbin/dnsmasq -C /tmp/dnsmasq_ap.conf, \
-    /usr/sbin/hostapd -B /etc/hostapd/hostapd.conf, \
+    /usr/sbin/hostapd -B /tmp/dap_hostapd.conf, \
     /usr/sbin/wpa_cli -i wlan0 list_networks, \
     /usr/sbin/wpa_cli -i wlan0 select_network *
 
