@@ -706,23 +706,24 @@ def get_bt_codec_info():
     try:
         res = subprocess.check_output(
             [
-                "gdbus", "call", "--system",
-                "--dest", "org.bluealsa",
-                "--object-path", pcm_path,
-                "--method", "org.freedesktop.DBus.Properties.Get",
+                "busctl", "--system", "get-property",
+                "org.bluealsa", pcm_path,
                 "org.bluealsa.PCM1", "Codec",
             ],
             text=True,
             errors="ignore",
-            timeout=1.0,
+            timeout=3.0,
         )
 
-        parts = res.split("'")
-        if len(parts) >= 2 and parts[1].strip():
-            return parts[1].strip().upper()
+        # busctl prints string properties as: s "SBC"
+        value_type, _, value = res.strip().partition(" ")
+        if value_type == "s" and value.strip().startswith('"') and value.strip().endswith('"'):
+            codec = value.strip()[1:-1].strip()
+            if codec:
+                return codec.upper()
 
-    except (subprocess.SubprocessError, OSError):
-        pass
+    except (subprocess.SubprocessError, OSError) as error:
+        print(f"BTコーデック取得エラー: {error}")
 
     return "取得待ち"
 def get_current_wifi_ssid():
