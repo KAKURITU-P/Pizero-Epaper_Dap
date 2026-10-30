@@ -2171,6 +2171,7 @@ def refresh_bt_paired_devices():
     global bt_paired_devices, bt_paired_devices_loading
 
     def _load():
+        global bt_paired_devices, bt_paired_devices_loading
         try:
             devices = get_bt_paired_devices()
         except Exception as error:
@@ -2181,7 +2182,7 @@ def refresh_bt_paired_devices():
             bt_paired_devices_loading = False
             if current_screen == "MENU_BT_PAIRED":
                 update_menu_items(reset_cursor=False)
-                request_display_update(is_full_refresh=False)
+                request_display_update(is_full_refresh=True)
 
     threading.Thread(target=_load, daemon=True).start()
 
