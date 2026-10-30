@@ -602,11 +602,17 @@ scroll_offset = 0
 menu_items = []
 
 bt_paired_devices = []
+bt_paired_devices_loading = False
+bt_connected_macs = set()
 bt_scanned_devices = []
 saved_wifi_ssids = []
 saved_wifi_connections = []
+wifi_menu_enabled = True
+wifi_menu_current_ssid = None
+wifi_menu_loading = False
 status_message = ""
 is_bt_scanning = False
+bt_connect_in_progress = False
 system_ram_usage_samples = deque(maxlen=60)
 system_resource_snapshot = None
 resource_sampled_at = 0.0
@@ -842,7 +848,9 @@ def render_system_resource_screen(image, draw, stats):
 
 def get_current_wifi_ssid():
     try:
-        res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
+        res = subprocess.check_output(
+            ["iwgetid", "-r"], text=True, errors="ignore", timeout=3
+        )
         ssid = res.strip()
         if ssid:
             return ssid
@@ -1373,6 +1381,29 @@ def cat_clock_timer_thread():
 threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 
 # --- 7. Bluetooth 接続 & オーディオ出力切替 ---
+def start_bt_connection(mac, name="Unknown", state_lock_held=False):
+    """Prevent overlapping Bluetooth pair/connect/audio reconfiguration jobs."""
+    global bt_connect_in_progress
+    if state_lock_held:
+        if bt_connect_in_progress:
+            return
+        bt_connect_in_progress = True
+    else:
+        with state_lock:
+            if bt_connect_in_progress:
+                return
+            bt_connect_in_progress = True
+
+    def _connect():
+        global bt_connect_in_progress
+        try:
+            connect_bt_device(mac, name)
+        finally:
+            with state_lock:
+                bt_connect_in_progress = False
+
+    threading.Thread(target=_connect, daemon=True).start()
+
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
 
@@ -1631,7 +1662,9 @@ ctl.equal {
 def get_rfkill_status():
     wifi_enabled, bt_enabled = True, True
     try:
-        res = subprocess.check_output(["sudo", "rfkill", "list"], text=True)
+        res = subprocess.check_output(
+            ["sudo", "rfkill", "list"], text=True, timeout=3
+        )
         current_type = None
         for line in res.splitlines():
             line_lower = line.lower()
@@ -1641,7 +1674,8 @@ def get_rfkill_status():
             if "soft blocked: yes" in line_lower:
                 if current_type == "wifi": wifi_enabled = False
                 elif current_type == "bt": bt_enabled = False
-    except Exception: pass
+    except (OSError, subprocess.SubprocessError):
+        pass
     return wifi_enabled, bt_enabled
 
 def toggle_rfkill(dev_type):
@@ -1704,19 +1738,33 @@ def toggle_rfkill(dev_type):
         print(f"[toggle_rfkill] Error: {e}")
         request_display_update(is_full_refresh=False)
 ap_previous_wifi_on = None
+ap_toggle_in_progress = False
 
 
 def get_ap_status():
     try:
         # AP is launched with hostapd -B rather than through systemd.
-        res = subprocess.run(["pgrep", "-x", "hostapd"], capture_output=True, text=True)
+        res = subprocess.run(
+            ["pgrep", "-x", "hostapd"], capture_output=True, text=True, timeout=3
+        )
         return res.returncode == 0
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
-def toggle_ap_mode():
+def toggle_ap_mode(state_lock_held=False):
+    global ap_toggle_in_progress
+    if state_lock_held:
+        if ap_toggle_in_progress:
+            return
+        ap_toggle_in_progress = True
+    else:
+        with state_lock:
+            if ap_toggle_in_progress:
+                return
+            ap_toggle_in_progress = True
+
     def _do_toggle():
-        global status_message, ap_previous_wifi_on
+        global status_message, ap_previous_wifi_on, ap_toggle_in_progress
         is_active = get_ap_status()
         try:
             if is_active:
@@ -1822,13 +1870,19 @@ bind-interfaces
             status_message = "APモード失敗"
             update_menu_items(reset_cursor=False)
             request_display_update(is_full_refresh=False)
+        finally:
+            with state_lock:
+                ap_toggle_in_progress = False
 
     threading.Thread(target=_do_toggle, daemon=True).start()
 
 def get_saved_wifi_connections():
     merged = {}
     try:
-        res = subprocess.check_output(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], text=True, errors="ignore")
+        res = subprocess.check_output(
+            ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+            text=True, errors="ignore", timeout=5,
+        )
         for name, conn_type in parse_nmcli_connection_show(res):
             cleaned = name.strip()
             if conn_type != "802-11-wireless" or cleaned == "Pi-DAP-AP" or is_probably_invalid_ssid(cleaned):
@@ -1839,7 +1893,10 @@ def get_saved_wifi_connections():
         pass
 
     try:
-        res = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True, errors="ignore")
+        res = subprocess.check_output(
+            ["sudo", "wpa_cli", "-i", "wlan0", "list_networks"],
+            text=True, errors="ignore", timeout=5,
+        )
         for network in parse_wpa_cli_list_networks(res):
             ssid_name = (network.get("ssid") or "").strip()
             if ssid_name == "Pi-DAP-AP" or is_probably_invalid_ssid(ssid_name):
@@ -1851,6 +1908,41 @@ def get_saved_wifi_connections():
         pass
 
     return list(merged.values())
+
+def refresh_wifi_menu(state_lock_held=False):
+    """Refresh Wi-Fi menu data asynchronously so GPIO handlers never wait on CLI calls."""
+    global wifi_menu_enabled, wifi_menu_current_ssid, wifi_menu_loading
+    global saved_wifi_connections, saved_wifi_ssids
+
+    if state_lock_held:
+        if wifi_menu_loading:
+            return
+        wifi_menu_loading = True
+    else:
+        with state_lock:
+            if wifi_menu_loading:
+                return
+            wifi_menu_loading = True
+
+    def _load():
+        try:
+            wifi_on, _ = get_rfkill_status()
+            connections = get_saved_wifi_connections() if wifi_on else []
+            current_ssid = get_current_wifi_ssid() if wifi_on else None
+        except Exception as error:
+            print(f"Wi-Fi設定の読み込み失敗: {error}")
+            wifi_on, connections, current_ssid = False, [], None
+        with state_lock:
+            wifi_menu_enabled = wifi_on
+            saved_wifi_connections = connections
+            saved_wifi_ssids = [entry["ssid"] for entry in connections]
+            wifi_menu_current_ssid = current_ssid
+            wifi_menu_loading = False
+            if current_screen == "MENU_WIFI":
+                update_menu_items(reset_cursor=False)
+                request_display_update(is_full_refresh=False)
+
+    threading.Thread(target=_load, daemon=True).start()
 
 def get_saved_wifi_ssids():
     return [entry["ssid"] for entry in get_saved_wifi_connections()]
@@ -1878,26 +1970,68 @@ def connect_to_wifi(target):
 
         status_message = f"接続中: {target_ssid}"
         request_display_update(is_full_refresh=False)
+        success = False
+        detail = ""
         try:
-            subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
+            unblock = subprocess.run(
+                ["sudo", "rfkill", "unblock", "wlan"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            if unblock.returncode != 0:
+                raise RuntimeError((unblock.stderr or "Wi-Fiを有効化できません").strip())
+
             res = None
             if target_nmcli_id:
-                res = subprocess.run(["nmcli", "connection", "up", "id", target_nmcli_id], capture_output=True, text=True)
+                res = subprocess.run(
+                    ["nmcli", "connection", "up", "id", target_nmcli_id],
+                    capture_output=True, text=True, check=False, timeout=25,
+                )
             if res is None or res.returncode != 0:
                 if not target_wpa_id:
-                    res_wpa = subprocess.check_output(["sudo", "wpa_cli", "-i", "wlan0", "list_networks"], text=True, errors="ignore")
+                    res_wpa = subprocess.check_output(
+                        ["sudo", "wpa_cli", "-i", "wlan0", "list_networks"],
+                        text=True, errors="ignore", timeout=5,
+                    )
                     for network in parse_wpa_cli_list_networks(res_wpa):
                         if (network.get("ssid") or "").strip() == target_ssid and network.get("id", "").isdigit():
                             target_wpa_id = network["id"]
                             break
                 if target_wpa_id:
-                    subprocess.run(["sudo", "wpa_cli", "-i", "wlan0", "select_network", target_wpa_id], check=False)
-        except Exception:
-            pass
-        time.sleep(3)
-        status_message = ""
-        update_menu_items()
+                    res = subprocess.run(
+                        ["sudo", "wpa_cli", "-i", "wlan0", "select_network", target_wpa_id],
+                        capture_output=True, text=True, check=False, timeout=8,
+                    )
+                    if res.returncode != 0 or "FAIL" in (res.stdout or "").upper():
+                        raise RuntimeError((res.stderr or res.stdout or "wpa_supplicantが接続を拒否しました").strip())
+                elif res is not None:
+                    detail = (res.stderr or res.stdout or "NetworkManager接続失敗").strip()
+                else:
+                    detail = "保存済みネットワークが見つかりません"
+
+            if not detail:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if get_current_wifi_ssid() == target_ssid:
+                        success = True
+                        break
+                    time.sleep(0.5)
+                if not success:
+                    detail = "接続を確認できません"
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            detail = str(error).strip()
+
+        status_message = "Wi-Fi接続成功" if success else "Wi-Fi接続失敗"
+        if not success:
+            print(f"Wi-Fi接続失敗 ({target_ssid}): {detail or '原因不明'}")
         request_display_update(is_full_refresh=False)
+        time.sleep(2.0)
+        if status_message in ("Wi-Fi接続成功", "Wi-Fi接続失敗"):
+            status_message = ""
+            request_display_update(is_full_refresh=False)
+        with state_lock:
+            should_refresh_menu = current_screen == "MENU_WIFI"
+        if should_refresh_menu:
+            refresh_wifi_menu()
 
     threading.Thread(target=_do_connect, daemon=True).start()
 
@@ -1940,7 +2074,9 @@ def format_time_str(seconds):
 
 # --- Bluetooth 区分処理 ---
 def get_bt_paired_devices():
+    global bt_connected_macs
     devices = {}
+    connected_macs = set()
     for command in (
         ["bluetoothctl", "devices", "Paired"],
         ["bluetoothctl", "paired-devices"],
@@ -1965,6 +2101,8 @@ def get_bt_paired_devices():
         properties = get_bt_device_properties(mac)
         if not bt_prop_is_yes(properties, "paired"):
             continue
+        if bt_prop_is_yes(properties, "connected"):
+            connected_macs.add(mac)
         name = resolve_bt_display_name(
             mac,
             alias=properties.get("alias"),
@@ -1973,7 +2111,27 @@ def get_bt_paired_devices():
         )
         devs.append((mac, name))
     devs.sort(key=lambda item: item[1].lower())
+    bt_connected_macs = connected_macs
     return devs
+
+def refresh_bt_paired_devices():
+    """Load paired-device details away from the GPIO callback/lock path."""
+    global bt_paired_devices, bt_paired_devices_loading
+
+    def _load():
+        try:
+            devices = get_bt_paired_devices()
+        except Exception as error:
+            print(f"登録済みBluetooth機器の取得失敗: {error}")
+            devices = []
+        with state_lock:
+            bt_paired_devices = devices
+            bt_paired_devices_loading = False
+            if current_screen == "MENU_BT_PAIRED":
+                update_menu_items(reset_cursor=False)
+                request_display_update(is_full_refresh=False)
+
+    threading.Thread(target=_load, daemon=True).start()
 
 def trigger_bt_scan(state_lock_held=False):
     global is_bt_scanning, bt_scanned_devices
@@ -1990,13 +2148,22 @@ def trigger_bt_scan(state_lock_held=False):
     def _scan_thread():
         global is_bt_scanning, status_message, bt_scanned_devices
         scanned = []
+        process = None
         status_message = "BT検索中(8秒)..."
         request_display_update(is_full_refresh=False)
         try:
-            subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
-            bt_service = subprocess.run(["sudo", "systemctl", "is-active", "bluetooth"], capture_output=True, text=True, check=False)
+            subprocess.run(
+                ["sudo", "rfkill", "unblock", "bluetooth"], check=False, timeout=10
+            )
+            bt_service = subprocess.run(
+                ["sudo", "systemctl", "is-active", "bluetooth"],
+                capture_output=True, text=True, check=False, timeout=5,
+            )
             if bt_service.stdout.strip() != "active":
-                subprocess.run(["sudo", "systemctl", "start", "bluetooth"], check=False)
+                subprocess.run(
+                    ["sudo", "systemctl", "start", "bluetooth"],
+                    check=False, timeout=10,
+                )
 
             process = subprocess.Popen(
                 ["bluetoothctl"],
@@ -2039,6 +2206,15 @@ def trigger_bt_scan(state_lock_held=False):
             scanned.sort(key=lambda item: item[1].lower())
         except Exception as e:
             print(f"BT検索エラー: {e}")
+        finally:
+            # bluetoothctl can survive a timeout or an exception during scan.
+            # Reap it before allowing another scan to start.
+            if process is not None and process.poll() is None:
+                try:
+                    process.kill()
+                    process.communicate(timeout=3)
+                except (OSError, subprocess.SubprocessError) as error:
+                    print(f"BT検索プロセス終了失敗: {error}")
         with state_lock:
             bt_scanned_devices = list(scanned)
             is_bt_scanning = False
@@ -2109,18 +2285,15 @@ def update_menu_items(reset_cursor=True):
             f"APモード: {'ON' if get_ap_status() else 'OFF'}"
         ]
     elif current_screen == "MENU_WIFI":
-        wifi_on, _ = get_rfkill_status()
-        saved_wifi_connections = get_saved_wifi_connections() if wifi_on else []
-        saved_wifi_ssids = [entry["ssid"] for entry in saved_wifi_connections]
-        current_ssid = get_current_wifi_ssid() if wifi_on else None
-
-        items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_on else 'OFF'}"]
-        if wifi_on:
+        items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_menu_enabled else 'OFF'}"]
+        if wifi_menu_enabled:
             if saved_wifi_connections:
                 for entry in saved_wifi_connections:
                     ssid = entry["ssid"]
-                    connected_label = " (接続済)" if current_ssid and ssid == current_ssid else ""
+                    connected_label = " (接続済)" if wifi_menu_current_ssid and ssid == wifi_menu_current_ssid else ""
                     items.append(f"接続: {ssid}{connected_label}")
+            elif wifi_menu_loading:
+                items.append("(読み込み中...)")
             else:
                 items.append("(記憶されたWi-Fiなし)")
         else:
@@ -2137,7 +2310,6 @@ def update_menu_items(reset_cursor=True):
         menu_items = items
 
     elif current_screen == "MENU_BT_PAIRED":
-        bt_paired_devices = get_bt_paired_devices()
         items = ["../ (戻る)"]
         if bt_paired_devices:
             name_counts = {}
@@ -2145,8 +2317,10 @@ def update_menu_items(reset_cursor=True):
                 name_counts[name] = name_counts.get(name, 0) + 1
             for mac, name in bt_paired_devices:
                 display_name = format_bt_menu_name(name, mac, include_suffix=name_counts.get(name, 0) > 1)
-                connected_label = " (接続済)" if (audio_output_mode == "BT" and is_bt_connected(mac)) else ""
+                connected_label = " (接続済)" if mac in bt_connected_macs else ""
                 items.append(f"接続: {display_name}{connected_label}")
+        elif bt_paired_devices_loading:
+            items.append("(読み込み中...)")
         else:
             items.append("(登録済み機器なし)")
         menu_items = items
@@ -2286,6 +2460,7 @@ def on_btn_menu_or_select():
     global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
     global is_clock_unlocked, is_eq_unlocked
     global system_resource_snapshot, resource_sampled_at
+    global bt_paired_devices, bt_paired_devices_loading
     with state_lock:
         reset_inactivity_timer()
 
@@ -2407,6 +2582,7 @@ def on_btn_menu_or_select():
                 elif current_screen == "MENU_CONN":
                     if selected == "Wi-Fi設定":
                         current_screen = "MENU_WIFI"
+                        refresh_wifi_menu(state_lock_held=True)
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected == "Bluetooth設定":
@@ -2414,13 +2590,14 @@ def on_btn_menu_or_select():
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
                     elif selected.startswith("APモード:"):
-                        toggle_ap_mode()
+                        toggle_ap_mode(state_lock_held=True)
                         update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
 
                 elif current_screen == "MENU_WIFI":
                     if selected.startswith("Wi-Fi機能:"):
                         toggle_rfkill("wifi")
+                        refresh_wifi_menu(state_lock_held=True)
                         update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
                     elif selected.startswith("接続:"):
@@ -2438,8 +2615,11 @@ def on_btn_menu_or_select():
                         set_audio_output(new_mode, connected_bt_mac)
                     elif selected == "登録済みデバイス":
                         current_screen = "MENU_BT_PAIRED"
+                        bt_paired_devices_loading = True
+                        bt_paired_devices = []
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
+                        refresh_bt_paired_devices()
                     elif selected == "新規デバイスの検索":
                         current_screen = "MENU_BT_SCAN"
                         update_menu_items(reset_cursor=True)
@@ -2450,7 +2630,7 @@ def on_btn_menu_or_select():
                         chosen_idx = cursor_idx - 1
                         if 0 <= chosen_idx < len(bt_paired_devices):
                             mac, name = bt_paired_devices[chosen_idx]
-                            threading.Thread(target=connect_bt_device, args=(mac, name), daemon=True).start()
+                            start_bt_connection(mac, name, state_lock_held=True)
 
                 elif current_screen == "MENU_BT_SCAN":
                     if selected == "検索開始":
@@ -2459,7 +2639,7 @@ def on_btn_menu_or_select():
                         chosen_idx = cursor_idx - 2
                         if 0 <= chosen_idx < len(bt_scanned_devices):
                             mac, name = bt_scanned_devices[chosen_idx]
-                            threading.Thread(target=connect_bt_device, args=(mac, name), daemon=True).start()
+                            start_bt_connection(mac, name, state_lock_held=True)
 
                 elif current_screen == "MENU_ALBUMS":
                     if selected == "[★ お気に入り]":
