@@ -781,7 +781,7 @@ def get_bt_codec_info():
     return "取得待ち"
 
 def sample_system_resource_usage():
-    """Update storage usage and a rolling RAM average for the resource screen."""
+    """Update storage usage and a rolling RAM average in the background."""
     global system_resource_snapshot, resource_sampled_at
     sample_time = time.monotonic()
     try:
@@ -821,6 +821,16 @@ def sample_system_resource_usage():
         with state_lock:
             system_resource_snapshot = {"error": str(error), "sampled_at": sample_time}
             resource_sampled_at = sample_time
+
+def system_resource_monitor_thread():
+    """Keep resource statistics current even while their screen is closed."""
+    while True:
+        sample_system_resource_usage()
+        with state_lock:
+            resource_screen_active = current_screen == "MENU_SYS_RAM_ROM"
+        if resource_screen_active:
+            request_display_update(is_full_refresh=False)
+        time.sleep(5)
 
 def format_size_bytes(value):
     amount = float(value)
@@ -2550,7 +2560,6 @@ def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
     global is_clock_unlocked, is_eq_unlocked
-    global system_resource_snapshot, resource_sampled_at
     global bt_paired_devices, bt_paired_devices_loading
     with state_lock:
         reset_inactivity_timer()
@@ -2788,9 +2797,6 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=False)
 
                     elif selected == "RAM/ROM使用量":
-                        system_ram_usage_samples.clear()
-                        system_resource_snapshot = None
-                        resource_sampled_at = 0.0
                         current_screen = "MENU_SYS_RAM_ROM"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
@@ -3023,6 +3029,8 @@ def handle_track_completion():
         is_playing = False
         request_display_update(is_full_refresh=False)
 
+threading.Thread(target=system_resource_monitor_thread, daemon=True).start()
+
 try:
     # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
     if playlist:
@@ -3038,13 +3046,6 @@ try:
     while True:
         time.sleep(0.2)
         now = time.time()
-
-        with state_lock:
-            resource_screen_active = current_screen == "MENU_SYS_RAM_ROM"
-            resource_sample_due = time.monotonic() - resource_sampled_at >= 5.0
-        if resource_screen_active and resource_sample_due:
-            sample_system_resource_usage()
-            request_display_update(is_full_refresh=False)
 
         # --- スリープタイマー監視 ---
         # 時間が来たら即シャットダウンせず、待機フラグを立てる
