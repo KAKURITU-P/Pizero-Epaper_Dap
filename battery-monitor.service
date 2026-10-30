@@ -1,0 +1,14 @@
+[Unit]
+Description=Pi-DAP battery monitor
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dap
+ExecStart=/usr/bin/python3 /home/pi/dap/battery_monitor.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

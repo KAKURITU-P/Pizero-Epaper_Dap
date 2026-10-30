@@ -100,7 +100,10 @@ sudo reboot
 ```bash
 sudo systemctl status dap.service --no-pager
 sudo systemctl start dap.service
+sudo systemctl status battery-monitor.service --no-pager
 ```
+
+セットアップでは `battery-monitor.service` も自動起動に登録します。バッテリー残量表示と低電圧時の安全停止には、I2C bus 3 上の MCP3425 (アドレス `0x68`) と既定の分圧回路が必要です。I2Cを有効にしてから再起動してください。未接続・読み取り失敗時は残量表示が `--%` になります。
 
 APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。Bluetoothの標準セットアップは SBC 対応です。AAC が必要な場合は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。AACビルドは任意で、Pi上で時間がかかります。
 

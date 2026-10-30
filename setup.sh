@@ -44,6 +44,9 @@ sudo apt-get install -y \
     python3-smbus2 \
     python3-spidev \
     rfkill
+if getent group i2c >/dev/null; then
+    sudo usermod -aG i2c "$DAP_USER"
+fi
 
 echo "=== Waveshare 2.13-inch V4 ドライバーを準備 ==="
 EPD_DIR="$DAP_DIR/waveshare_epd"
@@ -86,12 +89,15 @@ sudo bash "$DAP_DIR/tools/configure_dap_sudoers.sh"
 
 echo "=== systemd サービスを登録 ==="
 sudo install -o root -g root -m 0644 "$DAP_DIR/dap.service" /etc/systemd/system/dap.service
+sudo install -o root -g root -m 0644 "$DAP_DIR/battery-monitor.service" /etc/systemd/system/battery-monitor.service
 sudo systemctl daemon-reload
 sudo systemctl enable dap.service
+sudo systemctl enable --now battery-monitor.service
 
 echo
 echo "セットアップが完了しました。"
-echo "SPIを有効にしていない場合は sudo raspi-config の Interface Options > SPI で有効にし、再起動してください。"
+echo "SPIとI2Cを有効にしていない場合は sudo raspi-config の Interface Options で有効にし、再起動してください。"
+echo "バッテリー監視は I2C bus 3 と MCP3425 (0x68) を使用します。配線とバス番号を確認してください。"
 echo "APを使う前に ap_config.json の初期パスワードを変更してください。"
 echo "DAPを起動するには: sudo systemctl start dap.service"
 echo "AAC対応BlueALSAは任意です。手順は docs/BLUEALSA_AAC.md を参照してください。"

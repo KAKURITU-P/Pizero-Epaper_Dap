@@ -617,6 +617,10 @@ resource_sampled_at = 0.0
 def status_notification_expiry_thread():
     """Clear transient status messages five seconds after they change."""
     global status_message
+    in_progress_prefixes = (
+        "接続中:", "音声デバイス待機中", "切替中:", "更新データを取得中",
+        "AP ON中", "AP OFF中", "BT検索中", "Wi-Fi接続中",
+    )
     observed_message = ""
     changed_at = time.monotonic()
     while True:
@@ -625,7 +629,7 @@ def status_notification_expiry_thread():
         if message != observed_message:
             observed_message = message
             changed_at = now
-        elif message and now - changed_at >= 5.0:
+        elif message and not message.startswith(in_progress_prefixes) and now - changed_at >= 5.0:
             status_message = ""
             observed_message = ""
             changed_at = now
@@ -1603,7 +1607,7 @@ def connect_bt_device(mac, name="Unknown"):
     update_menu_items()
     request_display_update(is_full_refresh=False)
 
-def set_audio_output(mode, mac=None):
+def set_audio_output(mode, mac=None, state_lock_held=False):
     global audio_output_mode, status_message, connected_bt_mac
 
     status_message = f"切替中: {mode}"
@@ -1612,7 +1616,7 @@ def set_audio_output(mode, mac=None):
     if mode == "BT":
         target_mac = mac or connected_bt_mac
         if target_mac:
-            connect_bt_device(target_mac, "Bluetooth")
+            start_bt_connection(target_mac, "Bluetooth", state_lock_held=state_lock_held)
         else:
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
@@ -1770,19 +1774,37 @@ def toggle_ap_mode(state_lock_held=False):
     def _do_toggle():
         global status_message, ap_previous_wifi_on, ap_toggle_in_progress
         is_active = get_ap_status()
+
+        def run_required(command, timeout=10, allow_returncodes=()):
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=timeout
+            )
+            if result.returncode != 0 and result.returncode not in allow_returncodes:
+                detail = (result.stderr or result.stdout).strip()
+                raise RuntimeError(
+                    f"{' '.join(command)} failed ({result.returncode})"
+                    + (f": {detail}" if detail else "")
+                )
+            return result
+
         try:
             if is_active:
                 status_message = "AP OFF中..."
                 request_display_update(is_full_refresh=False)
 
-                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
-                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
-                subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
-                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-                subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False)
+                run_required(["sudo", "pkill", "-TERM", "hostapd"], allow_returncodes=(1,))
+                run_required(["sudo", "pkill", "-TERM", "dnsmasq"], allow_returncodes=(1,))
+                run_required(["sudo", "ip", "link", "set", "wlan0", "down"])
+                run_required(["sudo", "ip", "addr", "flush", "dev", "wlan0"])
+                run_required(["sudo", "ip", "link", "set", "wlan0", "up"])
+                run_required(["sudo", "systemctl", "restart", "NetworkManager"], timeout=30)
+                nm_state = subprocess.run(
+                    ["systemctl", "is-active", "--quiet", "NetworkManager"], timeout=5
+                )
+                if nm_state.returncode != 0:
+                    raise RuntimeError("NetworkManagerが起動していません")
                 if ap_previous_wifi_on is False:
-                    subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
+                    run_required(["sudo", "rfkill", "block", "wlan"])
                 ap_previous_wifi_on = None
 
             else:
@@ -1791,16 +1813,16 @@ def toggle_ap_mode(state_lock_held=False):
 
                 ap_previous_wifi_on, _ = get_rfkill_status()
 
-                subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], check=False)
-                subprocess.run(["sudo", "pkill", "-TERM", "wpa_supplicant"], check=False)
-                subprocess.run(["sudo", "pkill", "-TERM", "hostapd"], check=False)
-                subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
+                run_required(["sudo", "systemctl", "stop", "NetworkManager"], timeout=30)
+                run_required(["sudo", "pkill", "-TERM", "wpa_supplicant"], allow_returncodes=(1,))
+                run_required(["sudo", "pkill", "-TERM", "hostapd"], allow_returncodes=(1,))
+                run_required(["sudo", "pkill", "-TERM", "dnsmasq"], allow_returncodes=(1,))
 
-                subprocess.run(["sudo", "rfkill", "unblock", "wlan"], check=False)
-                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "down"], check=False)
-                subprocess.run(["sudo", "ip", "addr", "flush", "dev", "wlan0"], check=False)
-                subprocess.run(["sudo", "ip", "link", "set", "wlan0", "up"], check=False)
-                subprocess.run(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"], check=False)
+                run_required(["sudo", "rfkill", "unblock", "wlan"])
+                run_required(["sudo", "ip", "link", "set", "wlan0", "down"])
+                run_required(["sudo", "ip", "addr", "flush", "dev", "wlan0"])
+                run_required(["sudo", "ip", "link", "set", "wlan0", "up"])
+                run_required(["sudo", "ip", "addr", "add", "192.168.4.1/24", "dev", "wlan0"])
                 time.sleep(0.5)
 
                 dnsmasq_conf = """interface=wlan0
@@ -1841,20 +1863,29 @@ bind-interfaces
 
                 dns_result = subprocess.run(
                     ["sudo", "dnsmasq", "-C", "/tmp/dnsmasq_ap.conf"],
-                    check=False, capture_output=True, text=True,
+                    check=False, capture_output=True, text=True, timeout=10,
                 )
                 if dns_result.returncode != 0:
                     raise RuntimeError(f"dnsmasq起動失敗: {dns_result.stderr.strip()}")
                 hostapd_result = subprocess.run(
                     ["sudo", "hostapd", "-B", "/tmp/dap_hostapd.conf"],
-                    check=False, capture_output=True, text=True,
+                    check=False, capture_output=True, text=True, timeout=10,
                 )
                 if hostapd_result.returncode != 0:
                     subprocess.run(["sudo", "pkill", "-TERM", "dnsmasq"], check=False)
                     raise RuntimeError(f"hostapd起動失敗: {hostapd_result.stderr.strip()}")
 
+                time.sleep(0.5)
+                if not get_ap_status():
+                    raise RuntimeError("hostapdが起動状態になりません")
+                dnsmasq_state = subprocess.run(
+                    ["pgrep", "-x", "dnsmasq"], capture_output=True, timeout=3
+                )
+                if dnsmasq_state.returncode != 0:
+                    raise RuntimeError("dnsmasqが起動状態になりません")
+
             time.sleep(1)
-            subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
+            run_required(["sudo", "systemctl", "restart", "avahi-daemon"], timeout=20)
 
             status_message = ""
             update_menu_items()
@@ -1871,6 +1902,9 @@ bind-interfaces
                     subprocess.run(["sudo", "rfkill", "block", "wlan"], check=False)
                 ap_previous_wifi_on = None
                 subprocess.run(["sudo", "systemctl", "restart", "avahi-daemon"], check=False)
+            else:
+                # Recover the normal Wi-Fi manager if AP shutdown only partly completed.
+                subprocess.run(["sudo", "systemctl", "restart", "NetworkManager"], check=False, timeout=30)
             status_message = "APモード失敗"
             update_menu_items(reset_cursor=False)
             request_display_update(is_full_refresh=False)
@@ -2669,7 +2703,7 @@ def on_btn_menu_or_select():
                         request_display_update(is_full_refresh=False)
                     elif selected.startswith("出力先:"):
                         new_mode = "BT" if audio_output_mode == "PWM" else "PWM"
-                        set_audio_output(new_mode, connected_bt_mac)
+                        set_audio_output(new_mode, connected_bt_mac, state_lock_held=True)
                     elif selected == "登録済みデバイス":
                         current_screen = "MENU_BT_PAIRED"
                         bt_paired_devices_loading = True
