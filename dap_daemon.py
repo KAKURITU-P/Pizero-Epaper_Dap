@@ -405,13 +405,6 @@ def show_fav_toast(is_fav):
     global status_message
     status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
     request_display_update(is_full_refresh=False)
-    
-    def _clear():
-        time.sleep(1.5)
-        global status_message
-        status_message = ""
-        request_display_update(is_full_refresh=False)
-    threading.Thread(target=_clear, daemon=True).start()
 
 def toggle_favorite_current_track():
     if not playlist or current_track_idx >= len(playlist):
@@ -616,6 +609,28 @@ bt_connect_in_progress = False
 system_ram_usage_samples = deque(maxlen=60)
 system_resource_snapshot = None
 resource_sampled_at = 0.0
+
+
+def status_notification_expiry_thread():
+    """Clear transient status messages five seconds after they change."""
+    global status_message
+    observed_message = ""
+    changed_at = time.monotonic()
+    while True:
+        message = status_message
+        now = time.monotonic()
+        if message != observed_message:
+            observed_message = message
+            changed_at = now
+        elif message and now - changed_at >= 5.0:
+            status_message = ""
+            observed_message = ""
+            changed_at = now
+            request_display_update(is_full_refresh=False)
+        time.sleep(0.2)
+
+
+threading.Thread(target=status_notification_expiry_thread, daemon=True).start()
 
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
@@ -1099,21 +1114,11 @@ def request_display_update(is_full_refresh=False):
         display_queue.queue.clear()
     display_queue.put(True)
 
-def _set_github_update_status(message, clear_after=None):
+def _set_github_update_status(message):
     global status_message
     with state_lock:
         status_message = message
     request_display_update(is_full_refresh=False)
-
-    if clear_after is not None:
-        def _clear_status():
-            time.sleep(clear_after)
-            global status_message
-            with state_lock:
-                if status_message == message:
-                    status_message = ""
-            request_display_update(is_full_refresh=False)
-        threading.Thread(target=_clear_status, daemon=True).start()
 
 
 def _github_update_worker():
@@ -1144,14 +1149,14 @@ def _github_update_worker():
         if head.returncode != 0 or target.returncode != 0:
             raise RuntimeError("更新対象の版を確認できません")
         if head.stdout.strip() == target.stdout.strip():
-            _set_github_update_status("GitHubは最新です", clear_after=4)
+            _set_github_update_status("GitHubは最新です")
             return
 
         already_contains_main = run_git([
             "merge-base", "--is-ancestor", target.stdout.strip(), "HEAD"
         ], timeout=15)
         if already_contains_main.returncode == 0:
-            _set_github_update_status("GitHubは最新です", clear_after=4)
+            _set_github_update_status("GitHubは最新です")
             return
 
         merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
@@ -1177,7 +1182,7 @@ def _github_update_worker():
         os.execv(sys.executable, [sys.executable, os.path.join(BASE_DIR, "dap_daemon.py")])
     except Exception as e:
         print(f"GitHub update error: {e}")
-        _set_github_update_status(f"更新失敗: {str(e)[:42]}", clear_after=8)
+        _set_github_update_status(f"更新失敗: {str(e)[:42]}")
     finally:
         github_update_in_progress = False
 
@@ -1590,8 +1595,6 @@ def connect_bt_device(mac, name="Unknown"):
             restore_pwm_after_failure()
 
     request_display_update(is_full_refresh=True)
-    time.sleep(1.5)
-    status_message = ""
     update_menu_items()
     request_display_update(is_full_refresh=False)
 
@@ -1608,8 +1611,6 @@ def set_audio_output(mode, mac=None):
         else:
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
-            time.sleep(1.0)
-            status_message = ""
 
     elif mode == "PWM":
         try:
@@ -1653,8 +1654,6 @@ ctl.equal {
         apply_eq_settings()
         status_message = "PWMモード設定"
         request_display_update(is_full_refresh=True)
-        time.sleep(1.0)
-        status_message = ""
         update_menu_items()
         request_display_update(is_full_refresh=False)
 
@@ -1708,7 +1707,7 @@ def toggle_rfkill(dev_type):
                 )
                 _, new_bt_on = get_rfkill_status()
                 success = result.returncode == 0 and not new_bt_on
-                status_message = "BT OFF" if success else "BT無効化失敗"
+                status_message = "" if success else "BT無効化失敗"
             else:
                 unblock = subprocess.run(
                     ["sudo", "rfkill", "unblock", "bluetooth"],
@@ -2024,10 +2023,6 @@ def connect_to_wifi(target):
         if not success:
             print(f"Wi-Fi接続失敗 ({target_ssid}): {detail or '原因不明'}")
         request_display_update(is_full_refresh=False)
-        time.sleep(2.0)
-        if status_message in ("Wi-Fi接続成功", "Wi-Fi接続失敗"):
-            status_message = ""
-            request_display_update(is_full_refresh=False)
         with state_lock:
             should_refresh_menu = current_screen == "MENU_WIFI"
         if should_refresh_menu:
