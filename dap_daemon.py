@@ -603,6 +603,8 @@ saved_wifi_connections = []
 wifi_menu_enabled = True
 wifi_menu_current_ssid = None
 wifi_menu_loading = False
+wifi_menu_loading_since = 0.0
+wifi_menu_load_error = False
 status_message = ""
 is_bt_scanning = False
 bt_connect_in_progress = False
@@ -1908,40 +1910,78 @@ def get_saved_wifi_connections():
 
     return list(merged.values())
 
+def _wifi_menu_load_timeout():
+    """Release the Wi-Fi menu from a stale loading state if a worker stalls."""
+    global wifi_menu_loading, wifi_menu_load_error
+    with state_lock:
+        if not wifi_menu_loading or time.monotonic() - wifi_menu_loading_since < 15.0:
+            return
+        wifi_menu_loading = False
+        wifi_menu_load_error = True
+        print("Wi-Fi設定の読み込みが15秒でタイムアウトしました", flush=True)
+        if current_screen == "MENU_WIFI":
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+
+
 def refresh_wifi_menu(state_lock_held=False):
     """Refresh Wi-Fi menu data asynchronously so GPIO handlers never wait on CLI calls."""
     global wifi_menu_enabled, wifi_menu_current_ssid, wifi_menu_loading
+    global wifi_menu_loading_since, wifi_menu_load_error
     global saved_wifi_connections, saved_wifi_ssids
 
     if state_lock_held:
         if wifi_menu_loading:
             return
         wifi_menu_loading = True
+        wifi_menu_loading_since = time.monotonic()
+        wifi_menu_load_error = False
     else:
         with state_lock:
             if wifi_menu_loading:
                 return
             wifi_menu_loading = True
+            wifi_menu_loading_since = time.monotonic()
+            wifi_menu_load_error = False
 
     def _load():
+        global wifi_menu_load_error
+        wifi_on, connections, current_ssid = False, [], None
+        load_error = False
         try:
             wifi_on, _ = get_rfkill_status()
             connections = get_saved_wifi_connections() if wifi_on else []
             current_ssid = get_current_wifi_ssid() if wifi_on else None
         except Exception as error:
-            print(f"Wi-Fi設定の読み込み失敗: {error}")
-            wifi_on, connections, current_ssid = False, [], None
+            load_error = True
+            print(f"Wi-Fi設定の読み込み失敗: {error}", flush=True)
         with state_lock:
             wifi_menu_enabled = wifi_on
             saved_wifi_connections = connections
             saved_wifi_ssids = [entry["ssid"] for entry in connections]
             wifi_menu_current_ssid = current_ssid
             wifi_menu_loading = False
+            wifi_menu_load_error = load_error
+            print(f"Wi-Fi設定を更新しました: profiles={len(connections)}, radio={'on' if wifi_on else 'off'}", flush=True)
             if current_screen == "MENU_WIFI":
                 update_menu_items(reset_cursor=False)
                 request_display_update(is_full_refresh=False)
 
-    threading.Thread(target=_load, daemon=True).start()
+    try:
+        threading.Thread(target=_load, daemon=True).start()
+    except RuntimeError as error:
+        with state_lock:
+            wifi_menu_loading = False
+            wifi_menu_load_error = True
+            print(f"Wi-Fi設定の読み込みスレッドを開始できません: {error}", flush=True)
+            if current_screen == "MENU_WIFI":
+                update_menu_items(reset_cursor=False)
+                request_display_update(is_full_refresh=False)
+        return
+
+    timer = threading.Timer(15.0, _wifi_menu_load_timeout)
+    timer.daemon = True
+    timer.start()
 
 def get_saved_wifi_ssids():
     return [entry["ssid"] for entry in get_saved_wifi_connections()]
@@ -2289,6 +2329,8 @@ def update_menu_items(reset_cursor=True):
                     items.append(f"接続: {ssid}{connected_label}")
             elif wifi_menu_loading:
                 items.append("(読み込み中...)")
+            elif wifi_menu_load_error:
+                items.append("(読み込み失敗: 戻って再試行)")
             else:
                 items.append("(記憶されたWi-Fiなし)")
         else:
