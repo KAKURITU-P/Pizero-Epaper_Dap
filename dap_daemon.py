@@ -1952,7 +1952,8 @@ def refresh_wifi_menu(state_lock_held=False, reason="manual"):
             wifi_menu_load_error = False
 
     def _load():
-        global wifi_menu_load_error
+        global wifi_menu_enabled, wifi_menu_current_ssid, wifi_menu_loading
+        global wifi_menu_load_error, saved_wifi_connections, saved_wifi_ssids
         wifi_on, connections, current_ssid = False, [], None
         load_error = False
         try:
