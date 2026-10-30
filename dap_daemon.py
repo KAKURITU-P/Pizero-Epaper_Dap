@@ -14,7 +14,9 @@ import signal
 import contextlib
 import ctypes
 import json
+import shutil
 import pygame
+from collections import deque
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
@@ -605,6 +607,9 @@ saved_wifi_ssids = []
 saved_wifi_connections = []
 status_message = ""
 is_bt_scanning = False
+system_ram_usage_samples = deque(maxlen=60)
+system_resource_snapshot = None
+resource_sampled_at = 0.0
 
 last_btn_times = {}
 DEBOUNCE_TIME = 0.25
@@ -746,6 +751,95 @@ def get_bt_codec_info():
         print(f"BTコーデック取得エラー: {error}")
 
     return "取得待ち"
+
+def sample_system_resource_usage():
+    """Update storage usage and a rolling RAM average for the resource screen."""
+    global system_resource_snapshot, resource_sampled_at
+    sample_time = time.monotonic()
+    try:
+        disk = shutil.disk_usage("/")
+        meminfo = {}
+        with open("/proc/meminfo", "r", encoding="ascii") as mem_file:
+            for line in mem_file:
+                key, _, value = line.partition(":")
+                if key in ("MemTotal", "MemAvailable"):
+                    meminfo[key] = int(value.strip().split()[0]) * 1024
+
+        total_ram = meminfo["MemTotal"]
+        available_ram = meminfo["MemAvailable"]
+        used_ram = max(0, total_ram - available_ram)
+
+        with state_lock:
+            system_ram_usage_samples.append((used_ram, total_ram))
+            sample_count = len(system_ram_usage_samples)
+            average_used_ram = sum(sample[0] for sample in system_ram_usage_samples) / sample_count
+            average_total_ram = sum(sample[1] for sample in system_ram_usage_samples) / sample_count
+            average_ram_percent = (
+                average_used_ram * 100.0 / average_total_ram if average_total_ram else 0.0
+            )
+            system_resource_snapshot = {
+                "storage_used": disk.used,
+                "storage_total": disk.total,
+                "storage_percent": disk.used * 100.0 / disk.total if disk.total else 0.0,
+                "ram_average_used": average_used_ram,
+                "ram_average_total": average_total_ram,
+                "ram_average_percent": average_ram_percent,
+                "sample_count": sample_count,
+                "sampled_at": sample_time,
+            }
+            resource_sampled_at = sample_time
+    except (OSError, KeyError, ValueError) as error:
+        print(f"System resource read error: {error}")
+        with state_lock:
+            system_resource_snapshot = {"error": str(error), "sampled_at": sample_time}
+            resource_sampled_at = sample_time
+
+def format_size_bytes(value):
+    amount = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if amount < 1024.0 or unit == "TB":
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024.0
+    return f"{amount:.1f} TB"
+
+def render_system_resource_screen(image, draw, stats):
+    width = image.width
+    header = "システム設定 > RAM/ROM使用量"
+    draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
+    draw.line([(0, 18), (width - 1, 18)], fill=0)
+
+    if not stats or "error" in stats:
+        message = "使用量を計測中..." if not stats else "使用量を取得できません"
+        draw.text((8, 34), message, font=font_main, fill=0)
+        return
+
+    draw.text((8, 22), "ストレージ使用量 (/)", font=font_small, fill=0)
+    storage_text = (
+        f"{format_size_bytes(stats['storage_used'])} / "
+        f"{format_size_bytes(stats['storage_total'])}  "
+        f"{stats['storage_percent']:.0f}%"
+    )
+    draw.text((8, 36), truncate_by_width(storage_text, font_small, width - 16), font=font_small, fill=0)
+    draw.rectangle([8, 51, width - 9, 63], outline=0, fill=255, width=1)
+    storage_fill = int((width - 21) * min(100.0, stats["storage_percent"]) / 100.0)
+    if storage_fill > 0:
+        draw.rectangle([10, 53, 9 + storage_fill, 61], fill=0)
+
+    count = stats["sample_count"]
+    period_label = "直近5分平均" if count >= 60 else f"RAM平均 (測定中 {count}/60)"
+    draw.text((8, 69), period_label, font=font_small, fill=0)
+    ram_text = (
+        f"{format_size_bytes(stats['ram_average_used'])} / "
+        f"{format_size_bytes(stats['ram_average_total'])}  "
+        f"{stats['ram_average_percent']:.0f}%"
+    )
+    draw.text((8, 82), truncate_by_width(ram_text, font_small, width - 16), font=font_small, fill=0)
+    draw.rectangle([8, 97, width - 9, 109], outline=0, fill=255, width=1)
+    ram_fill = int((width - 21) * min(100.0, stats["ram_average_percent"]) / 100.0)
+    if ram_fill > 0:
+        draw.rectangle([10, 99, 9 + ram_fill, 107], fill=0)
+    draw.text((8, 111), "5秒ごとに更新", font=font_small, fill=0)
+
 def get_current_wifi_ssid():
     try:
         res = subprocess.check_output(["iwgetid", "-r"], text=True, errors='ignore')
@@ -1120,6 +1214,10 @@ def display_worker():
                 playing = is_playing
                 cur_vol = volume
                 stat_msg = status_message
+                resource_stats = (
+                    dict(system_resource_snapshot)
+                    if system_resource_snapshot is not None else None
+                )
 
                 current_sec = get_current_sec()
                 tot_sec = total_duration_sec
@@ -1137,6 +1235,9 @@ def display_worker():
 
             elif scr == "CAT_EQ":
                 render_eq_screen(image, draw, epd.height, epd.width)
+
+            elif scr == "MENU_SYS_RAM_ROM":
+                render_system_resource_screen(image, draw, resource_stats)
 
             elif scr == "PLAY":
                 # モード表示生成 ([1] / [ALL] / [SHUF] 等)
@@ -2070,12 +2171,15 @@ def update_menu_items(reset_cursor=True):
             "ライセンス表示",
             f"IP: {get_ip_address()}",
             f"BTコーデック: {bt_codec}",
+            "RAM/ROM使用量",
             "再起動",
             "シャットダウン"
         ]
         if is_clock_unlocked or is_eq_unlocked:
             items.insert(5, "隠し機能を削除")
         menu_items = items
+    elif current_screen == "MENU_SYS_RAM_ROM":
+        menu_items = ["../ (戻る)"]
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
         menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [entry["display"] for entry in library_menu_entries]
@@ -2181,6 +2285,7 @@ def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
     global is_clock_unlocked, is_eq_unlocked
+    global system_resource_snapshot, resource_sampled_at
     with state_lock:
         reset_inactivity_timer()
 
@@ -2221,6 +2326,7 @@ def on_btn_menu_or_select():
                                 current_screen = "MENU_TRACKS"
                     elif current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]:
                         current_screen = "MENU_TOP"
+                    elif current_screen == "MENU_SYS_RAM_ROM": current_screen = "MENU_SYS"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
                     elif current_screen in ["MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
@@ -2410,6 +2516,14 @@ def on_btn_menu_or_select():
                         reload_music_library()
                         request_display_update(is_full_refresh=False)
 
+                    elif selected == "RAM/ROM使用量":
+                        system_ram_usage_samples.clear()
+                        system_resource_snapshot = None
+                        resource_sampled_at = 0.0
+                        current_screen = "MENU_SYS_RAM_ROM"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
+
                     elif selected == "GitHubから更新":
                         start_github_update()
 
@@ -2461,7 +2575,11 @@ def on_btn_play_or_back():
 
         if exit_cat_clock_if_needed(): return
 
-        if current_screen == "PLAY":
+        if current_screen == "MENU_SYS_RAM_ROM":
+            current_screen = "MENU_SYS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif current_screen == "PLAY":
             if is_playing:
                 pause_start_time = time.time()
                 track_paused_time = get_current_sec()
@@ -2650,6 +2768,13 @@ try:
         time.sleep(0.2)
         now = time.time()
 
+        with state_lock:
+            resource_screen_active = current_screen == "MENU_SYS_RAM_ROM"
+            resource_sample_due = time.monotonic() - resource_sampled_at >= 5.0
+        if resource_screen_active and resource_sample_due:
+            sample_system_resource_usage()
+            request_display_update(is_full_refresh=False)
+
         # --- スリープタイマー監視 ---
         # 時間が来たら即シャットダウンせず、待機フラグを立てる
         if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
@@ -2691,7 +2816,7 @@ try:
                     last_drawn_segment = current_segment
                     request_display_update(is_full_refresh=False)
 
-            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ"] and (now - last_user_action_time > 10):
+            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ", "MENU_SYS_RAM_ROM"] and (now - last_user_action_time > 10):
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
