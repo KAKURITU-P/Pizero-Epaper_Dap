@@ -24,7 +24,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
   - 自動スリープ機能（メニュー画面で 10 秒間無操作の場合、PLAY 画面へ自動復帰）
 - **システム・省電力・通信管理**
   - **rfkill 制御:** UI 上から Wi-Fi および Bluetooth の ON/OFF を個別切り替え可能
-  - **Bluetooth 音声出力:** `bluetoothctl` による周辺機器の自動スキャン、ペアリング、自動接続対応
+  - **Bluetooth 音声出力:** `bluetoothctl` による周辺機器の検索、選択した機器のペアリング・接続に対応
   - UI 上での IP アドレス確認、曲ライブラリの再読み込み、再起動、シャットダウン、解放済み隠し機能の削除操作に対応
 
 ---
@@ -57,7 +57,11 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 ```text
 .
 ├── dap_daemon.py       # DAP メイン制御デーモン (Pygame / GPIO / EPD)
-├── waveshare_epd/      # 電子ペーパー用ドライバライブラリ
+├── setup.sh            # 初回セットアップ（依存関係・ドライバー・systemd）
+├── ap_config.json      # AP の SSID / パスワード / 国コード / チャンネル
+├── tools/              # セットアップ・保守用スクリプト
+├── docs/               # Bluetooth AAC 等の追加手順
+├── waveshare_epd/      # セットアップ時に取得する Waveshare ドライバー
 ├── stereo_test.py      # L/R ステレオ位相・チャンネル確認用ツール
 ├── gpio_test.py        # GPIO ボタン入力確認用テストスクリプト
 ├── gpio_check.py       # GPIO ピン状態チェックツール
@@ -70,53 +74,35 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ## セットアップ手順
 
-### 1. 依存ライブラリのインストール
+対応環境は Raspberry Pi Zero WH と Raspberry Pi OS (Trixie) です。アプリは `/home/pi/dap`、音楽は `/home/pi/music`、実行ユーザーは `pi` を前提とします。
+
+リポジトリを所定の場所に取得して、セットアップツールを実行します。
 
 ```bash
 sudo apt update
-sudo apt install -y python3-pip python3-pygame python3-pil python3-gpiozero python3-mutagen bluetooth bluez bluez-alsa-utils libasound2-plugin-equal
-
+sudo apt install -y git
+git clone https://github.com/KAKURITU-P/Pizero-Epaper_Dap.git /home/pi/dap
+cd /home/pi/dap
+bash setup.sh
 ```
 
-### 2. ライブラリ・音楽フォルダの準備
+`setup.sh` は依存パッケージを APT から導入し、Waveshare 2.13-inch V4 ドライバーを取得して GPIO18 電源制御パッチを適用し、制限付き sudo 設定と systemd サービスを登録します。再実行しても、既存のドライバーと AP 設定を保持します。Pythonパッケージを `pip` でシステムに直接導入しません。
 
-音楽ファイルは `~/music` ディレクトリ配下に配置します（サブフォルダ構造にも対応）。
+SPIを有効化し、音楽を配置して起動します。SPIをまだ有効にしていない場合は `sudo raspi-config` → `Interface Options` → `SPI` で有効にしてから再起動してください。
 
 ```bash
-mkdir -p ~/music
-
+sudo raspi-config
+sudo reboot
 ```
 
-### 3. systemd による自動起動設定 (任意)
-
-`/etc/systemd/system/dap.service` を作成してデーモン化することで、ラズパイ起動時に自動で DAP が立ち上がります。
-
-```ini
-[Unit]
-Description=e-Paper DAP Daemon
-After=sound.target network.target
-
-[Service]
-ExecStart=/usr/bin/python3 /home/pi/dap/dap_daemon.py
-WorkingDirectory=/home/pi/dap
-StandardOutput=inherit
-StandardError=inherit
-Restart=always
-User=pi
-
-[Install]
-WantedBy=multi-user.target
-
-```
-
-サービスの有効化と起動：
+再起動後、音楽ファイルを `/home/pi/music` にコピーし、サービスを確認します。
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable dap.service
+sudo systemctl status dap.service --no-pager
 sudo systemctl start dap.service
-
 ```
+
+APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。Bluetoothの標準セットアップは SBC 対応です。AAC が必要な場合は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。AACビルドは任意で、Pi上で時間がかかります。
 
 ---
 
@@ -128,7 +114,7 @@ sudo systemctl start dap.service
 
 ### GPIO18 とPWM音声を併用する場合
 
-GPIO18/19をPWM音声出力に割り当てる構成では、WaveshareドライバーがGPIO18をPWR制御に使わないようにします。`setup.sh` は `/home/pi/dap/waveshare_epd/epdconfig.py` が存在する場合に、追跡対象の `tools/patch_waveshare_epd_gpio18_pwr.py` を適用します。ドライバーを後から配置した場合は次を実行してください。
+GPIO18/19をPWM音声出力に割り当てる構成では、WaveshareドライバーがGPIO18をPWR制御に使わないようにします。`setup.sh` はドライバーを取得し、`tools/patch_waveshare_epd_gpio18_pwr.py` を適用します。ドライバーを手動で更新した場合は、必要に応じて次を再実行してください。
 
 ```bash
 python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/waveshare_epd/epdconfig.py
