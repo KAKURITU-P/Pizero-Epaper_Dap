@@ -1921,7 +1921,7 @@ def _wifi_menu_load_timeout():
         print("Wi-Fi設定の読み込みが15秒でタイムアウトしました", flush=True)
         if current_screen == "MENU_WIFI":
             update_menu_items(reset_cursor=False)
-            request_display_update(is_full_refresh=False)
+            request_display_update(is_full_refresh=True)
 
 
 def refresh_wifi_menu(state_lock_held=False):
@@ -1962,10 +1962,14 @@ def refresh_wifi_menu(state_lock_held=False):
             wifi_menu_current_ssid = current_ssid
             wifi_menu_loading = False
             wifi_menu_load_error = load_error
-            print(f"Wi-Fi設定を更新しました: profiles={len(connections)}, radio={'on' if wifi_on else 'off'}", flush=True)
+            print(
+                f"Wi-Fi設定を更新しました: profiles={len(connections)}, "
+                f"radio={'on' if wifi_on else 'off'}, screen={current_screen}",
+                flush=True,
+            )
             if current_screen == "MENU_WIFI":
                 update_menu_items(reset_cursor=False)
-                request_display_update(is_full_refresh=False)
+                request_display_update(is_full_refresh=True)
 
     try:
         threading.Thread(target=_load, daemon=True).start()
@@ -1976,7 +1980,7 @@ def refresh_wifi_menu(state_lock_held=False):
             print(f"Wi-Fi設定の読み込みスレッドを開始できません: {error}", flush=True)
             if current_screen == "MENU_WIFI":
                 update_menu_items(reset_cursor=False)
-                request_display_update(is_full_refresh=False)
+                request_display_update(is_full_refresh=True)
         return
 
     timer = threading.Timer(15.0, _wifi_menu_load_timeout)
