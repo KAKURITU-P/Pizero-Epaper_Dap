@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200">
+<defs><style>
+text{font-family:'Yu Gothic UI','Meiryo',sans-serif;fill:#17212b}.title{font-size:34px;font-weight:700}.sub{font-size:18px;fill:#52606d}.h{font-size:24px;font-weight:700}.label{font-size:19px}.small{font-size:15px;fill:#52606d}.pin{font-size:17px;font-weight:600}
+.wire{fill:none;stroke:#263746;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wire2{fill:none;stroke:#4275a5;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.uncertain{fill:none;stroke:#b77b00;stroke-width:3;stroke-dasharray:9 8}.box{fill:#fff;stroke:#263746;stroke-width:2.5;rx:10}.module{fill:#eef4f8;stroke:#263746;stroke-width:2.5;rx:12}.note{fill:#fff5d8;stroke:#b77b00;stroke-width:2;rx:10}.net{fill:#e7f5ee;stroke:#39805c;stroke-width:2;rx:9}.dot{fill:#263746}
+</style></defs>
+<rect width="1600" height="2200" fill="#f2f5f7"/>
+<!-- Sheet 1 -->
+<rect x="35" y="35" width="1530" height="1025" fill="#fff" stroke="#aab4bd" stroke-width="2" rx="14"/>
+<text x="75" y="95" class="title">DAP 回路図 — 1. 電源・バッテリー監視</text>
+<text x="75" y="130" class="sub">長い配線をネット名に置き換え、接続先を横並びで追えるように整理。</text>
+<text x="80" y="190" class="h">充電・昇降圧</text>
+<rect x="80" y="220" width="180" height="100" class="box"/><text x="170" y="260" class="h" text-anchor="middle">USB入力</text><text x="170" y="293" class="pin" text-anchor="middle">5 V / GND</text>
+<rect x="350" y="205" width="260" height="130" class="module"/><text x="480" y="242" class="h" text-anchor="middle">TP4050</text><text x="375" y="275" class="pin">IN+ ← USB 5 V</text><text x="375" y="305" class="pin">IN− ← USB GND</text><text x="375" y="330" class="small">B+ → BAT+ / B− → GND</text>
+<path d="M260 255 H350" class="wire"/><path d="M260 295 H310 V320 H350" class="wire"/>
+<rect x="700" y="220" width="230" height="100" class="module"/><text x="815" y="260" class="h" text-anchor="middle">LiPo 3.7 V</text><text x="815" y="294" class="pin" text-anchor="middle">BAT+ / GND</text>
+<rect x="1040" y="205" width="260" height="150" class="module"/><text x="1170" y="242" class="h" text-anchor="middle">TPS63802</text><text x="1065" y="278" class="pin">VIN ← BAT+</text><text x="1065" y="310" class="pin">GND ← GND</text><text x="1065" y="342" class="pin">VOUT → SYS_5V</text>
+<rect x="1350" y="220" width="170" height="100" class="net"/><text x="1435" y="260" class="h" text-anchor="middle">SYS_5V</text><text x="1435" y="294" class="pin" text-anchor="middle">Pi 5 V</text>
+<path d="M610 270 H700" class="wire"/><path d="M610 300 H700" class="wire"/><path d="M930 250 H985 V278 H1040" class="wire2"/><path d="M930 300 H1005 V310 H1040" class="wire"/><path d="M1300 342 H1330 V294 H1350" class="wire2"/>
+<rect x="1040" y="365" width="480" height="90" class="box"/><text x="1070" y="402" class="pin">TPS63802 周辺：L ×1、10 µF / 100 µF（値は原図表記）</text><text x="1070" y="432" class="small">変換器GNDと各コンデンサの戻りは GND ネット</text>
+<text x="80" y="500" class="h">バッテリー監視・Pi 接続</text>
+<rect x="80" y="530" width="300" height="270" class="net"/><text x="230" y="575" class="h" text-anchor="middle">Raspberry Pi Zero</text><text x="120" y="630" class="pin">5 V  ← SYS_5V</text><text x="120" y="675" class="pin">3.3 V OUT</text><text x="120" y="720" class="pin">GPIO 4 / GPIO 23</text><text x="120" y="765" class="pin">GND</text>
+<rect x="500" y="545" width="330" height="220" class="module"/><text x="665" y="590" class="h" text-anchor="middle">MCP3421?*</text><text x="535" y="635" class="pin">VDD ← 3.3 V</text><text x="535" y="675" class="pin">GND ← GND</text><text x="535" y="715" class="pin">SDA / SCL</text><text x="535" y="750" class="small">原図ラベル: B+・B−・SDA・3.3V・SCL</text>
+<path d="M380 675 H450 V635 H500" class="wire2"/><path d="M380 765 H460 V675 H500" class="wire"/>
+<rect x="930" y="545" width="250" height="220" class="box"/><text x="1055" y="590" class="h" text-anchor="middle">I²C pull-up</text><text x="970" y="645" class="pin">SDA — 5.6 kΩ — 3.3 V</text><text x="970" y="695" class="pin">SCL — 5.6 kΩ — 3.3 V</text><text x="970" y="745" class="small">各1本</text>
+<path d="M830 715 H880 V645 H930" class="wire2"/><path d="M880 715 V695 H930" class="wire2"/>
+<rect x="1230" y="545" width="290" height="220" class="box"/><text x="1375" y="590" class="h" text-anchor="middle">電圧分圧</text><text x="1270" y="645" class="pin">BAT+ — 18 kΩ — sense</text><text x="1270" y="695" class="pin">sense — 10 kΩ — BAT−</text><text x="1270" y="745" class="small">監視ICのB+/B−表記に接続</text>
+<path d="M830 735 H900 V790 H1375 V765" class="uncertain"/>
+<rect x="80" y="835" width="1440" height="170" class="note"/><text x="110" y="875" class="h">原図照合が必要な箇所</text><text x="110" y="915" class="label">* 監視ICの型番は手書きで「MCP3…」までしか読めず、MCP3421は候補表記です。</text><text x="110" y="950" class="label">2SJ380・MTP4835I3・ダイオード・スイッチの配線は原図の交点を再確認するまで、ネット接続を確定していません。</text><text x="110" y="985" class="small">実装前にIC型番、MOSFET端子G/D/S、分圧の接続先を現物または回路図で照合してください。</text>
+
+<!-- Sheet 2 -->
+<rect x="35" y="1090" width="1530" height="1075" fill="#fff" stroke="#aab4bd" stroke-width="2" rx="14"/>
+<text x="75" y="1150" class="title">DAP 回路図 — 2. 操作スイッチ・音声出力</text>
+<text x="75" y="1185" class="sub">TMHU28は秋月AE-TMHU28-CONV（レバースイッチDIP化キット）として整理。GPIO番号はBCM表記。</text>
+<rect x="80" y="1240" width="340" height="730" class="net"/><text x="250" y="1285" class="h" text-anchor="middle">Raspberry Pi Zero</text>
+<text x="125" y="1350" class="pin">3.3 V</text><text x="125" y="1400" class="pin">GPIO 5</text><text x="125" y="1450" class="pin">GPIO 12</text><text x="125" y="1500" class="pin">GPIO 16</text><text x="125" y="1550" class="pin">GPIO 18</text><text x="125" y="1600" class="pin">GPIO 19</text><text x="125" y="1650" class="pin">GPIO 20</text><text x="125" y="1700" class="pin">GPIO 21*</text><text x="125" y="1750" class="pin">GPIO 22</text><text x="125" y="1800" class="pin">GPIO 27</text><text x="125" y="1850" class="pin">GND</text>
+<rect x="520" y="1270" width="400" height="250" class="module"/><text x="720" y="1315" class="h" text-anchor="middle">SW1 — TMHU28</text><text x="560" y="1365" class="pin">AE-TMHU28-CONV / SIP7</text><text x="560" y="1410" class="pin">BCM GPIO 21, 5, 22</text><text x="560" y="1455" class="pin">GND 共通（原図表記）</text><text x="560" y="1495" class="small">モーメンタリーレバースイッチ</text>
+<rect x="520" y="1570" width="400" height="250" class="module"/><text x="720" y="1615" class="h" text-anchor="middle">SW2 — TMHU28</text><text x="560" y="1665" class="pin">AE-TMHU28-CONV / SIP7</text><text x="560" y="1710" class="pin">BCM GPIO 16, 20, 12</text><text x="560" y="1755" class="pin">GND 共通（原図表記）</text><text x="560" y="1795" class="small">モーメンタリーレバースイッチ</text>
+<!-- DIP kit top view -->
+<rect x="1030" y="1260" width="450" height="250" class="box"/><text x="1255" y="1300" class="h" text-anchor="middle">DIPキット部品面（提供画像）</text>
+<rect x="1085" y="1320" width="340" height="145" fill="#fafafa" stroke="#263746" stroke-width="2"/>
+<circle cx="1115" cy="1350" r="11" fill="#17212b"/><circle cx="1395" cy="1350" r="11" fill="#17212b"/>
+<rect x="1140" y="1342" width="30" height="15" fill="#17212b"/><rect x="1340" y="1342" width="30" height="15" fill="#17212b"/>
+<g fill="#17212b"><rect x="1150" y="1400" width="18" height="28"/><rect x="1188" y="1400" width="18" height="28"/><rect x="1226" y="1400" width="18" height="28"/><rect x="1264" y="1400" width="18" height="28"/><rect x="1302" y="1400" width="18" height="28"/><rect x="1340" y="1400" width="18" height="28"/><rect x="1378" y="1400" width="18" height="28"/></g>
+<text x="1255" y="1490" class="small" text-anchor="middle">端子番号の向き・信号対応は未割当</text>
+<rect x="1030" y="1540" width="450" height="280" class="module"/><text x="1255" y="1585" class="h" text-anchor="middle">ステレオ出力フィルター</text><text x="1070" y="1635" class="pin">GPIO 18 → Audio R</text><text x="1070" y="1680" class="pin">GPIO 19 → Audio L</text><text x="1070" y="1725" class="pin">Audio GND → GND</text><text x="1070" y="1770" class="small">原図記載：L、100 µF、10 µF、300 Ω、</text><text x="1070" y="1795" class="small">2.8 kΩ、1 kΩ（左右チャンネル）</text>
+<path d="M420 1550 H470 V1620 H1030" class="wire2"/><path d="M420 1600 H490 V1670 H1030" class="wire2"/><path d="M420 1850 H500 V1735 H1030" class="wire"/>
+<rect x="80" y="1995" width="1400" height="125" class="note"/><text x="110" y="2035" class="h">確認待ち</text><text x="110" y="2075" class="label">* 手書きの左側GPIO一覧にGPIO21がなく、TMHU28側のGPIO21表記と不一致。写真の配線先を要確認。</text><text x="110" y="2105" class="small">DIP基板のレジスト画像は部品面パターンのみのため、7端子の番号・導通先は確定していません。</text>
+</svg>
