@@ -1436,7 +1436,9 @@ def connect_bt_device(mac, name="Unknown"):
         safe_init_audio()
 
     connected_bt_mac = mac
-    status_message = f"接続中: {name[:10]}"
+    # Keep the full device name; the display renderer applies pixel-aware
+    # truncation with an ellipsis when the status box is too narrow.
+    status_message = f"接続中: {name}"
     request_display_update(is_full_refresh=False)
 
     # 切替時のALSAフリーズ防止のためミキサーを停止
