@@ -230,6 +230,26 @@ font_main   = get_font(14)
 font_small  = get_font(12)
 font_clock  = get_font(30)
 
+def load_playback_mode_icons():
+    """Load the shuffle, repeat-one, and repeat-all glyphs from the sprite sheet."""
+    try:
+        sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
+        boxes = {
+            "shuffle": (12, 8, 44, 30),
+            "repeat_one": (12, 45, 44, 67),
+            "repeat_all": (12, 79, 44, 101),
+        }
+        icons = {}
+        for name, box in boxes.items():
+            icon = sheet.crop(box).resize((18, 12), Image.Resampling.LANCZOS)
+            icons[name] = icon.point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+        return icons
+    except (OSError, ValueError) as error:
+        print(f"再生モードアイコンを読み込めません: {error}")
+        return {}
+
+playback_mode_icons = load_playback_mode_icons()
+
 # --- 4. 音楽ライブラリ & お気に入り & レジューム ---
 MUSIC_DIR = os.path.expanduser("~/music")
 DATA_DIR = "/home/pi/dap"
@@ -1270,23 +1290,25 @@ def display_worker():
                 render_system_resource_screen(image, draw, resource_stats)
 
             elif scr == "PLAY":
-                # モード表示生成 ([1] / [ALL] / [SHUF] 等)
-                mode_str = ""
-                if repeat_mode == 1: mode_str += " [1]"
-                elif repeat_mode == 2: mode_str += " [ALL]"
-                if is_shuffle: mode_str += " [SHUF]"
-
                 # スリープタイマー表示生成
                 timer_str = ""
                 if sleep_timer_end_time > 0:
                     rem_sec = max(0, int(sleep_timer_end_time - time.time()))
                     timer_str = f" T:{rem_sec // 60}m"
 
-                state_str = ("> PLAY" if playing else "|| PAUSE") + mode_str + timer_str
+                state_str = "> PLAY" if playing else "|| PAUSE"
                 vol_str = f"VOL: {int(cur_vol * 100)}%"
 
-                draw.text((8, 2), truncate_by_width(state_str, font_main, 160), font=font_main, fill=0)
-                draw.text((170, 2), vol_str, font=font_main, fill=0)
+                draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
+                if is_shuffle and "shuffle" in playback_mode_icons:
+                    image.paste(playback_mode_icons["shuffle"], (68, 3))
+                if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
+                    image.paste(playback_mode_icons["repeat_one"], (91, 3))
+                elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
+                    image.paste(playback_mode_icons["repeat_all"], (91, 3))
+                if timer_str:
+                    draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
+                draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
