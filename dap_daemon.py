@@ -268,6 +268,7 @@ if not os.path.exists(DATA_DIR):
 
 playlist_original = []
 playlist = []
+playlist_base = []
 albums_dict = {}
 selected_album = None
 library_tree = {}
@@ -275,6 +276,7 @@ library_menu_entries = []
 current_track_idx = 0
 favorites_list = []
 playback_history = []
+is_shuffle = False
 
 # リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
 repeat_mode = 0
@@ -437,7 +439,10 @@ def save_resume_state():
     try:
         data = {
             "filepath": playlist[current_track_idx],
-            "track_idx": current_track_idx
+            "track_idx": current_track_idx,
+            "playlist": playlist,
+            "playlist_base": playlist_base or playlist,
+            "is_shuffle": is_shuffle,
         }
         with open(RESUME_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -445,14 +450,39 @@ def save_resume_state():
         print(f"Resume save error: {e}")
 
 def load_resume_state():
-    global current_track_idx
+    global current_track_idx, playlist, playlist_base, is_shuffle
     if os.path.exists(RESUME_FILE):
         try:
             with open(RESUME_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 filepath = data.get("filepath")
+                library_paths = set(playlist_original)
+                saved_playlist = data.get("playlist")
+                saved_base = data.get("playlist_base")
+                if isinstance(saved_playlist, list):
+                    restored = [path for path in saved_playlist if isinstance(path, str) and path in library_paths]
+                    if restored and filepath in restored:
+                        playlist = restored
+                        if isinstance(saved_base, list):
+                            playlist_base = [path for path in saved_base if isinstance(path, str) and path in library_paths]
+                        if not playlist_base:
+                            playlist_base = list(restored)
+                        is_shuffle = bool(data.get("is_shuffle", False))
+                        current_track_idx = playlist.index(filepath)
+                        return
+                # Older resume files saved only the track path. If that track is
+                # favorited, use the favorite list as the best available context.
+                if filepath in favorites_list:
+                    restored_favorites = [path for path in favorites_list if path in library_paths]
+                    if filepath in restored_favorites:
+                        playlist = list(restored_favorites)
+                        playlist_base = list(restored_favorites)
+                        current_track_idx = playlist.index(filepath)
+                        print("Resume restored using favorites playlist (legacy state)")
+                        return
                 if filepath and filepath in playlist:
                     current_track_idx = playlist.index(filepath)
+                    playlist_base = list(playlist)
         except Exception:
             pass
 
@@ -538,7 +568,7 @@ def get_library_entries(rel_dir, include_folder_play=False):
     return entries
 
 def reload_music_library():
-    global playlist_original, playlist, albums_dict, current_track_idx, library_tree
+    global playlist_original, playlist, playlist_base, albums_dict, current_track_idx, library_tree
 
     library_tree = {ROOT_REL_DIR: {"subdirs": set(), "tracks": []}}
     found_files = []
@@ -576,6 +606,7 @@ def reload_music_library():
 
     playlist_original = sorted(found_files)
     playlist = list(playlist_original)
+    playlist_base = list(playlist_original)
     current_track_idx = 0
 
     albums_dict = {}
@@ -586,11 +617,10 @@ def reload_music_library():
 load_favorites()
 reload_music_library()
 load_playback_history()
-load_resume_state()
 load_settings()
 
 is_playing = False
-is_shuffle = False
+load_resume_state()
 
 start_time = 0.0
 paused_duration = 0.0
@@ -2525,13 +2555,28 @@ def play_current_track(full_refresh=False):
 
         request_display_update(is_full_refresh=full_refresh)
 
+def set_playback_playlist(tracks, selected_path=None, start_index=0):
+    """Set the active source list, applying shuffle only within that list."""
+    global playlist, playlist_base, current_track_idx
+    playlist_base = list(tracks)
+    playlist = random.sample(playlist_base, len(playlist_base)) if is_shuffle else list(playlist_base)
+    if selected_path in playlist:
+        current_track_idx = playlist.index(selected_path)
+    elif playlist:
+        current_track_idx = max(0, min(start_index, len(playlist) - 1))
+    else:
+        current_track_idx = 0
+
 def toggle_shuffle():
-    global is_shuffle, playlist, current_track_idx
+    global is_shuffle, playlist, playlist_base, current_track_idx
     is_shuffle = not is_shuffle
     current_song = playlist[current_track_idx] if playlist else None
-    playlist = random.sample(playlist_original, len(playlist_original)) if is_shuffle else list(playlist_original)
+    if not playlist_base:
+        playlist_base = list(playlist)
+    playlist = random.sample(playlist_base, len(playlist_base)) if is_shuffle else list(playlist_base)
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
+    save_resume_state()
 
 def toggle_repeat():
     global repeat_mode
@@ -2687,8 +2732,7 @@ def on_btn_menu_or_select():
                 elif current_screen == "MENU_FAVS":
                     chosen_idx = cursor_idx - 1
                     if 0 <= chosen_idx < len(favorites_list):
-                        playlist = favorites_list
-                        current_track_idx = chosen_idx
+                        set_playback_playlist(favorites_list, selected_path=favorites_list[chosen_idx])
                         play_current_track(full_refresh=True)
                         current_screen = "PLAY"
 
@@ -2696,8 +2740,7 @@ def on_btn_menu_or_select():
                     history_paths = get_available_playback_history()
                     chosen_idx = cursor_idx - 1
                     if 0 <= chosen_idx < len(history_paths):
-                        playlist = list(history_paths)
-                        current_track_idx = chosen_idx
+                        set_playback_playlist(history_paths, selected_path=history_paths[chosen_idx])
                         play_current_track(full_refresh=True)
                         current_screen = "PLAY"
 
@@ -2784,8 +2827,7 @@ def on_btn_menu_or_select():
                             elif chosen_entry["type"] == "track":
                                 direct_tracks = get_direct_tracks_in_dir(ROOT_REL_DIR)
                                 if chosen_entry["path"] in direct_tracks:
-                                    playlist = direct_tracks
-                                    current_track_idx = direct_tracks.index(chosen_entry["path"])
+                                    set_playback_playlist(direct_tracks, selected_path=chosen_entry["path"])
                                     play_current_track(full_refresh=True)
                                     current_screen = "PLAY"
 
@@ -2800,16 +2842,14 @@ def on_btn_menu_or_select():
                         elif chosen_entry["type"] == "play_folder":
                             subtree_tracks = get_tracks_in_subtree(chosen_entry["rel_dir"])
                             if subtree_tracks:
-                                playlist = subtree_tracks
-                                current_track_idx = 0
+                                set_playback_playlist(subtree_tracks, start_index=0)
                                 play_current_track(full_refresh=True)
                                 current_screen = "PLAY"
                         elif chosen_entry["type"] == "track":
                             browsing_dir = normalize_rel_dir(selected_album)
                             direct_tracks = get_direct_tracks_in_dir(browsing_dir)
                             if chosen_entry["path"] in direct_tracks:
-                                playlist = direct_tracks
-                                current_track_idx = direct_tracks.index(chosen_entry["path"])
+                                set_playback_playlist(direct_tracks, selected_path=chosen_entry["path"])
                                 play_current_track(full_refresh=True)
                                 current_screen = "PLAY"
 
