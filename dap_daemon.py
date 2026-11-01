@@ -3137,6 +3137,7 @@ try:
     while True:
         time.sleep(0.2)
         now = time.time()
+        sync_favorites()
 
         # --- スリープタイマー監視 ---
         # 時間が来たら即シャットダウンせず、待機フラグを立てる

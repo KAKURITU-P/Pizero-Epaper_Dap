@@ -37,6 +37,16 @@
     .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
     .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
+    .favorite-tree { display: grid; gap: 4px; max-height: 420px; overflow: auto; margin-top: 10px; }
+    .favorite-tree details { margin-left: 12px; }
+    .favorite-tree summary { cursor: pointer; padding: 5px 0; font-weight: 650; }
+    .favorite-tree .favorite-row { margin: 3px 0; }
+    .favorite-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+    .favorite-panel { min-width: 0; }
+    .favorite-panel h3 { margin-top: 4px; }
+    @media (max-width: 760px) {
+      .favorite-panels { grid-template-columns: 1fr; }
+    }
     @media (prefers-color-scheme: dark) {
       :root { color: #e8edf1; background: #111820; }
       section { background: #1b2731; border-color: #34424d; }
@@ -69,15 +79,22 @@
       <p id="wifi-message" class="message"></p>
     </section>
 
-    <section>
+    <section class="wide">
       <h2>お気に入り曲</h2>
-      <p class="muted">お気に入り曲の再生順を上下ボタンで変更できます。</p>
-      <div id="favorite-order" class="favorite-list"><div class="muted">読み込み中…</div></div>
-      <p id="favorite-order-message" class="message"></p>
-      <h3>曲を追加・削除</h3>
-      <p class="muted">曲ごとのボタンで本体のお気に入り登録を変更できます。</p>
-      <div id="favorites" class="favorite-list"><div class="muted">読み込み中…</div></div>
-      <p id="favorites-message" class="message"></p>
+      <div class="favorite-panels">
+        <div class="favorite-panel">
+          <h3>再生順</h3>
+          <p class="muted">お気に入り曲の再生順を上下ボタンで変更できます。</p>
+          <div id="favorite-order" class="favorite-list"><div class="muted">読み込み中…</div></div>
+          <p id="favorite-order-message" class="message"></p>
+        </div>
+        <div class="favorite-panel">
+          <h3>曲を追加・削除</h3>
+          <p class="muted">音楽フォルダーの階層から曲を選んで登録・解除できます。</p>
+          <div id="favorites" class="favorite-tree"><div class="muted">読み込み中…</div></div>
+          <p id="favorites-message" class="message"></p>
+        </div>
+      </div>
     </section>
 
     <section>
@@ -202,33 +219,54 @@
           list.innerHTML = '<div class="muted">音楽ファイルがありません。</div>';
           return;
         }
+        const root = { folders: new Map(), tracks: [] };
         for (const track of result.tracks) {
-          const row = document.createElement("div"); row.className = "favorite-row";
-          const text = document.createElement("div");
-          const name = document.createElement("strong"); name.textContent = track.name;
-          const path = document.createElement("small"); path.textContent = track.path;
-          text.append(name, path);
-          const button = document.createElement("button");
-          button.className = track.favorite ? "secondary" : "";
-          button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
-          button.onclick = async () => {
-            button.disabled = true;
-            try {
-              const updated = await api("/api/favorites", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ path: track.path, favorite: !track.favorite })
-              });
-              track.favorite = updated.favorite;
-              button.className = track.favorite ? "secondary" : "";
-              button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
-              message("favorites-message", `${track.name}: ${track.favorite ? "登録しました" : "解除しました"}`, "success");
-            } catch (error) {
-              message("favorites-message", error.message, "error");
-            } finally { button.disabled = false; }
-          };
-          row.append(text, button); list.append(row);
+          const parts = track.path.split("/");
+          const filename = parts.pop();
+          let folder = root;
+          for (const part of parts) {
+            if (!folder.folders.has(part)) folder.folders.set(part, { folders: new Map(), tracks: [] });
+            folder = folder.folders.get(part);
+          }
+          folder.tracks.push({ ...track, name: filename.replace(/\.[^.]+$/, "") });
         }
+        function renderTree(folder, container) {
+          for (const [name, child] of [...folder.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+            const details = document.createElement("details"); details.open = true;
+            const summary = document.createElement("summary"); summary.textContent = `📁 ${name}`;
+            details.append(summary); container.append(details);
+            renderTree(child, details);
+          }
+          for (const track of folder.tracks.sort((a, b) => a.name.localeCompare(b.name))) {
+            const row = document.createElement("div"); row.className = "favorite-row";
+            const text = document.createElement("div");
+            const name = document.createElement("strong"); name.textContent = track.name;
+            const path = document.createElement("small"); path.textContent = track.path;
+            text.append(name, path);
+            const button = document.createElement("button");
+            button.className = track.favorite ? "secondary" : "";
+            button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
+            button.onclick = async () => {
+              button.disabled = true;
+              try {
+                const updated = await api("/api/favorites", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ path: track.path, favorite: !track.favorite })
+                });
+                track.favorite = updated.favorite;
+                button.className = track.favorite ? "secondary" : "";
+                button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
+                message("favorites-message", `${track.name}: ${track.favorite ? "登録しました" : "解除しました"}`, "success");
+                await loadFavorites();
+              } catch (error) {
+                message("favorites-message", error.message, "error");
+              } finally { button.disabled = false; }
+            };
+            row.append(text, button); container.append(row);
+          }
+        }
+        renderTree(root, list);
       } catch (error) { message("favorites-message", error.message, "error"); }
     }
     for (let channel = 1; channel <= 13; channel++) { const option = document.createElement("option"); option.value = channel; option.textContent = channel; $("ap-channel").append(option); }
