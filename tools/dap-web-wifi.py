@@ -2,7 +2,7 @@
 """Restricted root helper for DAP web Wi-Fi scan and connection actions."""
 
 import json
-import re
+import hashlib
 import subprocess
 import sys
 
@@ -81,18 +81,58 @@ def scan_networks():
 
 def connect_network(request):
     ssid = request.get("ssid")
+    security = request.get("security", "")
     password = request.get("password", "")
     if not isinstance(ssid, str) or not 1 <= len(ssid.encode("utf-8")) <= SSID_MAX_BYTES:
         raise ValueError("SSIDはUTF-8で1〜32バイトにしてください")
     if not isinstance(password, str):
         raise ValueError("Wi-Fiパスワードが不正です")
+    if not isinstance(security, str):
+        raise ValueError("Wi-Fi暗号方式が不正です")
     if password and (not 8 <= len(password) <= 63 or any(ord(char) < 32 or ord(char) > 126 for char in password)):
         raise ValueError("Wi-Fiパスワードは印字可能なASCIIで8〜63文字にしてください")
-    command = [NMCLI, "--wait", "45", "device", "wifi", "connect", ssid]
-    if password:
-        command.extend(["password", password])
-    command.extend(["ifname", "wlan0"])
-    result = run(command, 55)
+    security_upper = security.upper()
+    if not security_upper or security_upper in {"--", "NONE"}:
+        key_mgmt = "none"
+        if password:
+            raise ValueError("オープンネットワークではパスワードを空欄にしてください")
+    elif "WPA3" in security_upper and "WPA2" not in security_upper:
+        key_mgmt = "sae"
+    elif "WPA2" in security_upper or "WPA" in security_upper:
+        key_mgmt = "wpa-psk"
+    else:
+        raise ValueError("このWi-Fi暗号方式には対応していません。WPA2/WPA3-Personalまたはオープンネットワークを選んでください")
+    if key_mgmt != "none" and not password:
+        raise ValueError("Wi-Fiパスワードを入力してください")
+
+    profile_id = "DAP-Web-WiFi-" + hashlib.sha256(ssid.encode("utf-8")).hexdigest()[:12]
+    profile = run([NMCLI, "-g", "UUID", "connection", "show", "id", profile_id], 8)
+    settings = [
+        "connection.id", profile_id,
+        "connection.interface-name", "wlan0",
+        "connection.autoconnect", "yes",
+        "802-11-wireless.ssid", ssid,
+        "wifi-sec.key-mgmt", key_mgmt,
+        "ipv4.method", "auto",
+        "ipv6.method", "auto",
+    ]
+    if key_mgmt != "none":
+        settings.extend(["wifi-sec.psk", password])
+    else:
+        settings.extend(["wifi-sec.psk", ""])
+    if profile.returncode == 0 and profile.stdout.strip():
+        profile_uuid = profile.stdout.strip().splitlines()[0]
+        result = run([NMCLI, "connection", "modify", "uuid", profile_uuid, *settings], 10)
+    else:
+        result = run([NMCLI, "connection", "add", "type", "wifi", *settings], 10)
+    if result.returncode != 0:
+        raise RuntimeError(error_from(result, "Wi-Fiプロファイルを作成できませんでした"))
+    if profile.returncode != 0 or not profile.stdout.strip():
+        lookup = run([NMCLI, "-g", "UUID", "connection", "show", "id", profile_id], 8)
+        if lookup.returncode != 0 or not lookup.stdout.strip():
+            raise RuntimeError(error_from(lookup, "作成したWi-Fiプロファイルを取得できませんでした"))
+        profile_uuid = lookup.stdout.strip().splitlines()[0]
+    result = run([NMCLI, "--wait", "45", "connection", "up", "uuid", profile_uuid, "ifname", "wlan0"], 55)
     if result.returncode != 0:
         raise RuntimeError(error_from(result, "Wi-Fi接続に失敗しました"))
     return {"ok": True, "ssid": ssid, "message": "接続先を保存しました"}

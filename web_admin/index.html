@@ -149,7 +149,8 @@
       if (!ssid) return message("wifi-message", "接続先を選択してください", "error");
       $("connect").disabled = true; message("wifi-message", "接続しています… SSH/ブラウザーが一時切断される場合があります");
       try {
-        await api("/api/wifi/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ssid, password: $("wifi-password").value }) });
+        const security = $("networks").selectedOptions[0]?.dataset.security || "";
+        await api("/api/wifi/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ssid, security, password: $("wifi-password").value }) });
         for (let tries = 0; tries < 24; tries++) {
           await new Promise(resolve => setTimeout(resolve, 2500));
           const job = await api("/api/wifi/job");

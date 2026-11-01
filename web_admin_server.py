@@ -123,10 +123,10 @@ def scan_wifi():
     return run_wifi_helper({"action": "scan"}, timeout=35).get("networks", [])
 
 
-def connect_wifi_worker(ssid, password):
+def connect_wifi_worker(ssid, security, password):
     global WIFI_JOB
     try:
-        result = run_wifi_helper({"action": "connect", "ssid": ssid, "password": password}, timeout=60)
+        result = run_wifi_helper({"action": "connect", "ssid": ssid, "security": security, "password": password}, timeout=60)
         with WIFI_JOB_LOCK:
             WIFI_JOB = {"state": "success", "ssid": ssid, "message": result.get("message", "接続先を保存しました")}
     except (OSError, subprocess.SubprocessError, RuntimeError) as error:
@@ -134,13 +134,13 @@ def connect_wifi_worker(ssid, password):
             WIFI_JOB = {"state": "error", "ssid": ssid, "message": str(error)}
 
 
-def start_wifi_connect(ssid, password):
+def start_wifi_connect(ssid, security, password):
     global WIFI_JOB
     with WIFI_JOB_LOCK:
         if WIFI_JOB["state"] == "running":
             raise RuntimeError("別のWi-Fi接続処理が進行中です")
         WIFI_JOB = {"state": "running", "ssid": ssid, "message": "接続しています"}
-    threading.Thread(target=connect_wifi_worker, args=(ssid, password), daemon=True).start()
+    threading.Thread(target=connect_wifi_worker, args=(ssid, security, password), daemon=True).start()
 
 
 def save_ap_config(config):
@@ -284,6 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(saved)
             elif path == "/api/wifi/connect":
                 ssid = payload.get("ssid")
+                security = payload.get("security", "")
                 password = payload.get("password", "")
                 if not isinstance(ssid, str) or not 1 <= len(ssid.encode("utf-8")) <= SSID_MAX_BYTES:
                     raise ValueError("SSIDはUTF-8で1〜32バイトにしてください")
@@ -291,7 +292,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("パスワードが不正です")
                 if password and (not 8 <= len(password) <= 63 or any(ord(char) < 32 or ord(char) > 126 for char in password)):
                     raise ValueError("Wi-Fiパスワードは印字可能なASCIIで8〜63文字にしてください")
-                start_wifi_connect(ssid, password)
+                if not isinstance(security, str):
+                    raise ValueError("Wi-Fi暗号方式が不正です")
+                start_wifi_connect(ssid, security, password)
                 self.send_json({"state": "running", "ssid": ssid}, 202)
             else:
                 self.send_json({"error": "見つかりません"}, 404)
