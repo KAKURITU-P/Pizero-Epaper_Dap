@@ -178,13 +178,13 @@
         const storage = s.storage ? `${size(s.storage.used)} / ${size(s.storage.total)} (${s.storage.percent}%)` : "取得できません";
         $("status").innerHTML = "";
         const devices = (s.bluetooth_devices || "").replace(/^Device\s+[0-9A-Fa-f:]{17}\s*/gm, "").trim() || "なし";
-        for (const [label, value] of [["Wi-Fi", `${s.wifi_ssid} · ${s.wifi_ip}`], ["APモード", s.ap_active ? "ON" : "OFF"], ["バッテリー", battery], ["音楽ストレージ", storage], ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`], ["接続中のBT機器", devices], ["BlueALSA", s.bluealsa]]) {
+        for (const [label, value] of [["Wi-Fi", `${s.wifi_ssid} · ${s.wifi_ip}`], ["APモード", s.ap_active ? "ON" : "OFF"], ["バッテリー", battery], ["音楽ストレージ", storage], ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`], ["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]]) {
           const item = document.createElement("div"); item.className = "status-item";
           const small = document.createElement("small"); small.textContent = label;
           const strong = document.createElement("strong"); strong.textContent = value;
           item.append(small, strong); $("status").append(item);
         }
-        $("codec").textContent = s.codec_info ? `Bluetooth音声状態: ${s.codec_info}` : "";
+        $("codec").textContent = "";
       } catch (error) { message("status-message", error.message, "error"); }
     }
     async function loadAp() {

@@ -37,6 +37,45 @@ def command_output(command, timeout=8):
         return ""
 
 
+def get_bluetooth_codec(bluetooth_devices):
+    connected_macs = re.findall(
+        r"^Device\s+([0-9A-Fa-f:]{17})\s",
+        bluetooth_devices,
+        re.MULTILINE,
+    )
+    if not connected_macs:
+        return "未接続"
+    try:
+        tree = run(["busctl", "--system", "tree", "org.bluealsa"], timeout=4)
+        if tree.returncode != 0:
+            return "取得待ち"
+        for mac in connected_macs:
+            device_path = f"/dev_{mac.replace(':', '_').lower()}/"
+            for line in tree.stdout.splitlines():
+                match = re.search(r"(/org/bluealsa(?:/[A-Za-z0-9_]+)+)", line)
+                if not match:
+                    continue
+                pcm_path = match.group(1)
+                if device_path not in pcm_path.lower() or not pcm_path.lower().endswith("/a2dpsrc/sink"):
+                    continue
+                result = run(
+                    [
+                        "busctl", "--system", "get-property",
+                        "org.bluealsa", pcm_path,
+                        "org.bluealsa.PCM1", "Codec",
+                    ],
+                    timeout=4,
+                )
+                value_type, _, value = result.stdout.strip().partition(" ")
+                if result.returncode == 0 and value_type == "s":
+                    codec = value.strip().strip('"')
+                    if codec:
+                        return codec.upper()
+    except (OSError, subprocess.SubprocessError):
+        return "取得待ち"
+    return "A2DP待機中"
+
+
 def ap_is_active():
     try:
         return run(["pgrep", "-x", "hostapd"], timeout=3).returncode == 0
@@ -306,7 +345,7 @@ def get_status():
     wifi_ssid = command_output(["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", "wlan0"])
     ip_result = command_output(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"])
     ip_match = re.search(r"\binet\s+(\d+(?:\.\d+){3})/", ip_result)
-    codec_info = command_output(["bluealsa-cli", "status"], timeout=5)
+    codec_info = get_bluetooth_codec(bluetooth_devices)
     return {
         "ap_active": ap_is_active(),
         "wifi_ssid": wifi_ssid if wifi_ssid and wifi_ssid != "--" else "未接続",
