@@ -269,6 +269,21 @@ def move_favorite(relative_path, direction):
     return {"path": relative_path, "direction": direction}
 
 
+def save_favorite_order(relative_paths):
+    if not isinstance(relative_paths, list) or not all(isinstance(path, str) for path in relative_paths):
+        raise ValueError("お気に入り順の形式が不正です")
+    favorites = []
+    seen = set()
+    for relative_path in relative_paths:
+        absolute = str(music_file_path(relative_path))
+        if absolute not in seen:
+            favorites.append(absolute)
+            seen.add(absolute)
+    with FAVORITES_LOCK:
+        write_favorites(favorites)
+    return {"favorites": relative_paths}
+
+
 def get_status():
     try:
         storage = shutil.disk_usage("/home/pi/music")
@@ -394,7 +409,9 @@ class Handler(BaseHTTPRequestHandler):
                 start_wifi_connect(ssid, security, password)
                 self.send_json({"state": "running", "ssid": ssid}, 202)
             elif path == "/api/favorites":
-                if "move" in payload:
+                if "favorites" in payload:
+                    self.send_json(save_favorite_order(payload.get("favorites")))
+                elif "move" in payload:
                     self.send_json(move_favorite(payload.get("path"), payload.get("move")))
                 else:
                     self.send_json(update_favorite(payload.get("path"), payload.get("favorite")))
