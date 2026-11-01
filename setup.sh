@@ -29,17 +29,21 @@ sudo apt-get install -y \
     bluetooth \
     bluez \
     bluez-alsa-utils \
+    apache2-utils \
     dnsmasq \
     fonts-takao-gothic \
     hostapd \
     i2c-tools \
     libasound2-plugin-equal \
     network-manager \
+    nginx \
+    openssl \
     python3-gpiozero \
     python3-mutagen \
     python3-numpy \
     python3-pil \
     python3-pygame \
+    python3-qrcode \
     python3-rpi.gpio \
     python3-smbus2 \
     python3-spidev \
@@ -87,12 +91,34 @@ echo "AP設定: $DAP_DIR/ap_config.json (初期パスワードは必ず変更し
 echo "=== DAP サービス用 sudo 権限を設定 ==="
 sudo bash "$DAP_DIR/tools/configure_dap_sudoers.sh"
 
+echo "=== Web管理画面を設定 ==="
+ADMIN_AUTH_FILE="/etc/nginx/dap-admin.htpasswd"
+ADMIN_PASSWORD=""
+if ! sudo test -s "$ADMIN_AUTH_FILE"; then
+    ADMIN_PASSWORD="$(openssl rand -hex 16)"
+    ADMIN_AUTH_TMP="$(mktemp)"
+    ADMIN_HASH="$(printf '%s' "$ADMIN_PASSWORD" | openssl passwd -apr1 -stdin)"
+    printf 'pi:%s\n' "$ADMIN_HASH" >"$ADMIN_AUTH_TMP"
+    sudo install -o root -g www-data -m 0640 "$ADMIN_AUTH_TMP" "$ADMIN_AUTH_FILE"
+    rm -f -- "$ADMIN_AUTH_TMP"
+fi
+sudo install -o root -g root -m 0644 "$DAP_DIR/tools/nginx-dap-admin.conf" /etc/nginx/sites-available/dap-admin
+sudo ln -sfn ../sites-available/dap-admin /etc/nginx/sites-enabled/dap-admin
+if [[ "$(readlink -f /etc/nginx/sites-enabled/default 2>/dev/null || true)" == "/etc/nginx/sites-available/default" ]]; then
+    sudo rm -f /etc/nginx/sites-enabled/default
+fi
+
 echo "=== systemd サービスを登録 ==="
 sudo install -o root -g root -m 0644 "$DAP_DIR/dap.service" /etc/systemd/system/dap.service
 sudo install -o root -g root -m 0644 "$DAP_DIR/battery-monitor.service" /etc/systemd/system/battery-monitor.service
+sudo install -o root -g root -m 0644 "$DAP_DIR/dap-admin.service" /etc/systemd/system/dap-admin.service
 sudo systemctl daemon-reload
 sudo systemctl enable dap.service
 sudo systemctl enable --now battery-monitor.service
+sudo systemctl enable --now dap-admin.service
+sudo nginx -t
+sudo systemctl enable --now nginx.service
+sudo systemctl reload nginx.service
 
 echo
 echo "セットアップが完了しました。"
@@ -100,4 +126,10 @@ echo "SPIとI2Cを有効にしていない場合は sudo raspi-config の Interf
 echo "バッテリー監視は I2C bus 3 と MCP3425 (0x68) を使用します。配線とバス番号を確認してください。"
 echo "APを使う前に ap_config.json の初期パスワードを変更してください。"
 echo "DAPを起動するには: sudo systemctl start dap.service"
+echo "Web管理画面: http://<PiのIPアドレス>/ (ユーザー名 pi)"
+if [[ -n "$ADMIN_PASSWORD" ]]; then
+    echo "Web管理画面の初期パスワード (今だけ表示): $ADMIN_PASSWORD"
+    echo "このパスワードを安全な場所に保存してください。"
+fi
+echo "DUFSは127.0.0.1:8000で /files パス接頭辞を有効にして起動してください。"
 echo "AAC対応BlueALSAは任意です。手順は docs/BLUEALSA_AAC.md を参照してください。"

@@ -57,6 +57,8 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 ```text
 .
 ├── dap_daemon.py       # DAP メイン制御デーモン (Pygame / GPIO / EPD)
+├── web_admin_server.py # Web管理画面 API
+├── web_admin/          # Web管理画面
 ├── setup.sh            # 初回セットアップ（依存関係・ドライバー・systemd）
 ├── ap_config.json      # AP の SSID / パスワード / 国コード / チャンネル
 ├── tools/              # セットアップ・保守用スクリプト
@@ -86,9 +88,9 @@ cd /home/pi/dap
 bash setup.sh
 ```
 
-`setup.sh` は依存パッケージを APT から導入し、Waveshare 2.13-inch V4 ドライバーを取得して GPIO18 電源制御パッチを適用し、制限付き sudo 設定と systemd サービスを登録します。再実行しても、既存のドライバーと AP 設定を保持します。Pythonパッケージを `pip` でシステムに直接導入しません。
+`setup.sh` は依存パッケージを APT から導入し、Waveshare 2.13-inch V4 ドライバーを取得して GPIO18 電源制御パッチを適用し、制限付き sudo 設定、DAP／バッテリー／Web管理の systemd サービス、Nginxを登録します。再実行しても、既存のドライバーと AP 設定、管理画面パスワードを保持します。Pythonパッケージを `pip` でシステムに直接導入しません。
 
-SPIを有効化し、音楽を配置して起動します。SPIをまだ有効にしていない場合は `sudo raspi-config` → `Interface Options` → `SPI` で有効にしてから再起動してください。
+SPIとI2Cを有効化し、音楽を配置して起動します。SPI/I2Cをまだ有効にしていない場合は `sudo raspi-config` → `Interface Options` で有効にしてから再起動してください。
 
 ```bash
 sudo raspi-config
@@ -106,6 +108,24 @@ sudo systemctl status battery-monitor.service --no-pager
 セットアップでは `battery-monitor.service` も自動起動に登録します。バッテリー残量表示と低電圧時の安全停止には、I2C bus 3 上の MCP3425 (アドレス `0x68`) と既定の分圧回路が必要です。I2Cを有効にしてから再起動してください。未接続・読み取り失敗時は残量表示が `--%` になります。
 
 APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。Bluetoothの標準セットアップは SBC 対応です。AAC が必要な場合は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。AACビルドは任意で、Pi上で時間がかかります。
+
+### Web管理画面
+
+`setup.sh` は、Wi-Fi接続先の追加、AP設定の編集と接続用QRコード表示、バッテリー・音楽ストレージ・Bluetooth状態の確認を行うWeb管理画面も設定します。セットアップ完了時に初期パスワードが一度だけ表示されます。ユーザー名は `pi` です。パスワードを再設定する場合:
+
+```bash
+sudo htpasswd -m /etc/nginx/dap-admin.htpasswd pi
+```
+
+ブラウザーで `http://<PiのIPアドレス>/` を開きます。管理画面はHTTPで提供するため、インターネットへ公開せず、DAPに接続できる信頼したLANまたはAP内で使用してください。
+
+音楽ファイルのアップロードと削除はDUFSを使います。DUFSがインストール済みなら、`/home/pi/music`を配信し、ローカルだけで待ち受けるよう起動オプションを設定してください。管理画面の「DUFSを開く」は`/files/`へ接続します。
+
+```bash
+dufs --bind 127.0.0.1 --port 8000 --path-prefix /files --allow-upload --allow-delete /home/pi/music
+```
+
+既存のDUFS systemdサービスを使っている場合は、サービスの起動引数を上記の内容に合わせてください。`--bind 127.0.0.1`でポート8000をLANへ直接公開せず、Nginxの認証を通して利用できます。追加した音楽を本体の一覧に反映するには、本体メニューの「曲ライブラリ再読み込み」を実行してください。
 
 ---
 
