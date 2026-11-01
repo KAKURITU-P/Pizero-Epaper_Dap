@@ -106,7 +106,7 @@ def connect_network(request):
         raise ValueError("Wi-Fiパスワードを入力してください")
 
     profile_id = "DAP-Web-WiFi-" + hashlib.sha256(ssid.encode("utf-8")).hexdigest()[:12]
-    profile = run([NMCLI, "-g", "UUID", "connection", "show", "id", profile_id], 8)
+    profile = run([NMCLI, "-g", "connection.uuid", "connection", "show", "id", profile_id], 8)
     settings = [
         "connection.id", profile_id,
         "connection.interface-name", "wlan0",
@@ -128,7 +128,7 @@ def connect_network(request):
     if result.returncode != 0:
         raise RuntimeError(error_from(result, "Wi-Fiプロファイルを作成できませんでした"))
     if profile.returncode != 0 or not profile.stdout.strip():
-        lookup = run([NMCLI, "-g", "UUID", "connection", "show", "id", profile_id], 8)
+        lookup = run([NMCLI, "-g", "connection.uuid", "connection", "show", "id", profile_id], 8)
         if lookup.returncode != 0 or not lookup.stdout.strip():
             raise RuntimeError(error_from(lookup, "作成したWi-Fiプロファイルを取得できませんでした"))
         profile_uuid = lookup.stdout.strip().splitlines()[0]
