@@ -18,7 +18,11 @@ AP_CONFIG = BASE_DIR / "ap_config.json"
 PAGE_FILE = BASE_DIR / "web_admin" / "index.html"
 WIFI_JOB = {"state": "idle", "ssid": "", "message": ""}
 WIFI_JOB_LOCK = threading.Lock()
+FAVORITES_LOCK = threading.Lock()
 SSID_MAX_BYTES = 32
+MUSIC_DIR = Path("/home/pi/music")
+FAVORITES_FILE = BASE_DIR / "favorites.json"
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
 
 
 def run(command, timeout=8):
@@ -174,6 +178,97 @@ def save_ap_config(config):
     return content
 
 
+def music_file_path(relative_path):
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise ValueError("音楽ファイルを指定してください")
+    candidate = (MUSIC_DIR / relative_path).resolve()
+    try:
+        candidate.relative_to(MUSIC_DIR.resolve())
+    except ValueError as error:
+        raise ValueError("音楽フォルダー外のパスは指定できません") from error
+    if candidate.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS or not candidate.is_file():
+        raise ValueError("存在する対応音楽ファイルを指定してください")
+    return candidate
+
+
+def read_favorites():
+    try:
+        value = json.loads(FAVORITES_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"お気に入りを読み込めません: {error}") from error
+    if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
+        raise RuntimeError("お気に入りデータの形式が不正です")
+    return value
+
+
+def write_favorites(favorites):
+    temp_fd, temp_name = tempfile.mkstemp(prefix=".favorites.", dir=FAVORITES_FILE.parent)
+    try:
+        os.fchmod(temp_fd, 0o600)
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
+            json.dump(favorites, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write("\n")
+        os.replace(temp_name, FAVORITES_FILE)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def get_favorites():
+    with FAVORITES_LOCK:
+        favorite_order = read_favorites()
+    favorite_set = set(favorite_order)
+    tracks = []
+    track_by_path = {}
+    for path in sorted(MUSIC_DIR.rglob("*"), key=lambda item: str(item).lower()):
+        if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS:
+            absolute = str(path.resolve())
+            track = {
+                "path": str(path.relative_to(MUSIC_DIR)),
+                "name": path.stem,
+                "favorite": absolute in favorite_set,
+            }
+            tracks.append(track)
+            track_by_path[absolute] = track
+    ordered_favorites = [
+        track_by_path[path] for path in favorite_order if path in track_by_path
+    ]
+    return {"tracks": tracks, "favorites": ordered_favorites}
+
+
+def update_favorite(relative_path, favorite):
+    if not isinstance(favorite, bool):
+        raise ValueError("お気に入り状態が不正です")
+    path = music_file_path(relative_path)
+    absolute = str(path)
+    with FAVORITES_LOCK:
+        favorites = read_favorites()
+        favorites = [item for item in favorites if item != absolute]
+        if favorite:
+            favorites.append(absolute)
+        write_favorites(favorites)
+    return {"path": relative_path, "favorite": favorite}
+
+
+def move_favorite(relative_path, direction):
+    path = str(music_file_path(relative_path))
+    if direction not in {"up", "down"}:
+        raise ValueError("移動方向が不正です")
+    with FAVORITES_LOCK:
+        favorites = read_favorites()
+        try:
+            index = favorites.index(path)
+        except ValueError as error:
+            raise ValueError("指定した曲はお気に入りに登録されていません") from error
+        target = index - 1 if direction == "up" else index + 1
+        if 0 <= target < len(favorites):
+            favorites[index], favorites[target] = favorites[target], favorites[index]
+            write_favorites(favorites)
+    return {"path": relative_path, "direction": direction}
+
+
 def get_status():
     try:
         storage = shutil.disk_usage("/home/pi/music")
@@ -268,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/wifi/job":
                 with WIFI_JOB_LOCK:
                     self.send_json(dict(WIFI_JOB))
+            elif path == "/api/favorites":
+                self.send_json(get_favorites())
             else:
                 self.send_json({"error": "見つかりません"}, 404)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, ImportError) as error:
@@ -296,6 +393,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Wi-Fi暗号方式が不正です")
                 start_wifi_connect(ssid, security, password)
                 self.send_json({"state": "running", "ssid": ssid}, 202)
+            elif path == "/api/favorites":
+                if "move" in payload:
+                    self.send_json(move_favorite(payload.get("path"), payload.get("move")))
+                else:
+                    self.send_json(update_favorite(payload.get("path"), payload.get("favorite")))
             else:
                 self.send_json({"error": "見つかりません"}, 404)
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:

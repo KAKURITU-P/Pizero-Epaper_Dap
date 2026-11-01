@@ -32,6 +32,11 @@
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
     #qr { width: 150px; height: 150px; image-rendering: pixelated; background: white; border: 1px solid #ddd; }
     .network-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+    .favorite-list { display: grid; gap: 6px; max-height: 360px; overflow: auto; margin-top: 10px; }
+    .favorite-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; background: #f4f7f9; border-radius: 7px; }
+    .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
+    .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+    .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
     @media (prefers-color-scheme: dark) {
       :root { color: #e8edf1; background: #111820; }
       section { background: #1b2731; border-color: #34424d; }
@@ -65,6 +70,17 @@
     </section>
 
     <section>
+      <h2>お気に入り曲</h2>
+      <p class="muted">お気に入り曲の再生順を上下ボタンで変更できます。</p>
+      <div id="favorite-order" class="favorite-list"><div class="muted">読み込み中…</div></div>
+      <p id="favorite-order-message" class="message"></p>
+      <h3>曲を追加・削除</h3>
+      <p class="muted">曲ごとのボタンで本体のお気に入り登録を変更できます。</p>
+      <div id="favorites" class="favorite-list"><div class="muted">読み込み中…</div></div>
+      <p id="favorites-message" class="message"></p>
+    </section>
+
+    <section>
       <h2>AP設定</h2>
       <div class="grid">
         <div><label for="ap-ssid">SSID</label><input id="ap-ssid" maxlength="32"></div>
@@ -81,7 +97,7 @@
     <section class="wide">
       <h2>音楽ファイル</h2>
       <p>アップロードと削除はDUFSのファイル画面から行えます。</p>
-      <div class="actions"><a class="button" href="/files/">DUFSを開く</a></div>
+      <div class="actions"><a class="button" href="/files/" target="_blank" rel="noopener noreferrer">DUFSを開く</a></div>
       <p class="muted">DUFSがポート8000で起動している必要があります。音楽フォルダーを開いて操作してください。</p>
     </section>
   </main>
@@ -129,6 +145,92 @@
         message("ap-message", ap.restart_required ? "AP設定に未反映の変更があります。OFF→ONで反映してください。" : `AP状態: ${ap.active ? "ON" : "OFF"}`);
       } catch (error) { message("ap-message", error.message, "error"); }
     }
+    async function loadFavorites() {
+      try {
+        const result = await api("/api/favorites");
+        const orderList = $("favorite-order"); orderList.replaceChildren();
+        if (!result.favorites.length) {
+          orderList.innerHTML = '<div class="muted">お気に入り曲がありません。</div>';
+        } else {
+          for (const [index, track] of result.favorites.entries()) {
+            const row = document.createElement("div"); row.className = "favorite-row";
+            const text = document.createElement("div");
+            const name = document.createElement("strong"); name.textContent = `${index + 1}. ${track.name}`;
+            const path = document.createElement("small"); path.textContent = track.path;
+            text.append(name, path);
+            const actions = document.createElement("div"); actions.className = "favorite-actions";
+            for (const [direction, label, disabled] of [["up", "▲", index === 0], ["down", "▼", index === result.favorites.length - 1]]) {
+              const button = document.createElement("button"); button.className = "secondary";
+              button.textContent = label; button.title = direction === "up" ? "上へ移動" : "下へ移動";
+              button.disabled = disabled;
+              button.onclick = async () => {
+                button.disabled = true;
+                try {
+                  await api("/api/favorites", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ path: track.path, move: direction })
+                  });
+                  await loadFavorites();
+                } catch (error) {
+                  message("favorite-order-message", error.message, "error");
+                  button.disabled = false;
+                }
+              };
+              actions.append(button);
+            }
+            const remove = document.createElement("button"); remove.className = "secondary"; remove.textContent = "削除";
+            remove.onclick = async () => {
+              remove.disabled = true;
+              try {
+                await api("/api/favorites", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ path: track.path, favorite: false })
+                });
+                await loadFavorites();
+              } catch (error) {
+                message("favorite-order-message", error.message, "error");
+                remove.disabled = false;
+              }
+            };
+            actions.append(remove); row.append(text, actions); orderList.append(row);
+          }
+        }
+        const list = $("favorites"); list.replaceChildren();
+        if (!result.tracks.length) {
+          list.innerHTML = '<div class="muted">音楽ファイルがありません。</div>';
+          return;
+        }
+        for (const track of result.tracks) {
+          const row = document.createElement("div"); row.className = "favorite-row";
+          const text = document.createElement("div");
+          const name = document.createElement("strong"); name.textContent = track.name;
+          const path = document.createElement("small"); path.textContent = track.path;
+          text.append(name, path);
+          const button = document.createElement("button");
+          button.className = track.favorite ? "secondary" : "";
+          button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
+          button.onclick = async () => {
+            button.disabled = true;
+            try {
+              const updated = await api("/api/favorites", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: track.path, favorite: !track.favorite })
+              });
+              track.favorite = updated.favorite;
+              button.className = track.favorite ? "secondary" : "";
+              button.textContent = track.favorite ? "★ お気に入り解除" : "☆ お気に入り登録";
+              message("favorites-message", `${track.name}: ${track.favorite ? "登録しました" : "解除しました"}`, "success");
+            } catch (error) {
+              message("favorites-message", error.message, "error");
+            } finally { button.disabled = false; }
+          };
+          row.append(text, button); list.append(row);
+        }
+      } catch (error) { message("favorites-message", error.message, "error"); }
+    }
     for (let channel = 1; channel <= 13; channel++) { const option = document.createElement("option"); option.value = channel; option.textContent = channel; $("ap-channel").append(option); }
     $("scan").onclick = async () => {
       $("scan").disabled = true; message("wifi-message", "検索しています…");
@@ -172,7 +274,7 @@
       } catch (error) { message("ap-message", error.message, "error"); }
     };
     $("refresh-ap").onclick = loadAp;
-    loadAp(); refreshStatus(); setInterval(refreshStatus, 10000);
+    loadAp(); loadFavorites(); refreshStatus(); setInterval(refreshStatus, 10000);
   </script>
 </body>
 </html>
