@@ -32,12 +32,36 @@
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
     #qr { width: 150px; height: 150px; image-rendering: pixelated; background: white; border: 1px solid #ddd; }
     .network-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
-    .favorite-list { display: grid; gap: 6px; max-height: 360px; overflow: auto; margin-top: 10px; }
+    .favorite-list, .favorite-tree {
+      display: grid;
+      gap: 6px;
+      height: 420px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      margin-top: 10px;
+      padding-right: 6px;
+      scrollbar-width: auto;
+      scrollbar-color: #6f8799 #263844;
+      scrollbar-gutter: stable;
+    }
+    .favorite-list::-webkit-scrollbar, .favorite-tree::-webkit-scrollbar { width: 13px; }
+    .favorite-list::-webkit-scrollbar-track, .favorite-tree::-webkit-scrollbar-track {
+      background: #263844;
+      border-radius: 7px;
+    }
+    .favorite-list::-webkit-scrollbar-thumb, .favorite-tree::-webkit-scrollbar-thumb {
+      background: #6f8799;
+      border: 3px solid #263844;
+      border-radius: 7px;
+    }
+    .favorite-list::-webkit-scrollbar-thumb:hover, .favorite-tree::-webkit-scrollbar-thumb:hover {
+      background: #9ab0bf;
+    }
     .favorite-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; background: #f4f7f9; border-radius: 7px; }
     .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
     .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
-    .favorite-tree { display: grid; gap: 4px; max-height: 420px; overflow: auto; margin-top: 10px; }
+    .favorite-tree { gap: 4px; }
     .favorite-tree details { margin-left: 12px; }
     .favorite-tree summary { cursor: pointer; padding: 5px 0; font-weight: 650; }
     .favorite-tree .favorite-row { margin: 3px 0; }
@@ -218,7 +242,13 @@
             actions.append(remove); row.append(text, actions); orderList.append(row);
           }
         }
-        const list = $("favorites"); list.replaceChildren();
+        const list = $("favorites");
+        const openFolders = new Set(
+          [...list.querySelectorAll("details[data-path]")].filter(folder => folder.open)
+            .map(folder => folder.dataset.path)
+        );
+        const hasSavedFolderState = list.querySelector("details[data-path]") !== null;
+        list.replaceChildren();
         if (!result.tracks.length) {
           list.innerHTML = '<div class="muted">音楽ファイルがありません。</div>';
           return;
@@ -234,12 +264,15 @@
           }
           folder.tracks.push({ ...track, name: filename.replace(/\.[^.]+$/, "") });
         }
-        function renderTree(folder, container) {
+        function renderTree(folder, container, parentPath = "") {
           for (const [name, child] of [...folder.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-            const details = document.createElement("details"); details.open = true;
+            const folderPath = parentPath ? `${parentPath}/${name}` : name;
+            const details = document.createElement("details");
+            details.dataset.path = folderPath;
+            details.open = hasSavedFolderState ? openFolders.has(folderPath) : true;
             const summary = document.createElement("summary"); summary.textContent = `[F] ${name}`;
             details.append(summary); container.append(details);
-            renderTree(child, details);
+            renderTree(child, details, folderPath);
           }
           for (const track of folder.tracks.sort((a, b) => a.name.localeCompare(b.name))) {
             const row = document.createElement("div"); row.className = "favorite-row";
