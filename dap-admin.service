@@ -9,7 +9,6 @@ WorkingDirectory=/home/pi/dap
 ExecStart=/usr/bin/python3 /home/pi/dap/web_admin_server.py
 Restart=always
 RestartSec=3
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

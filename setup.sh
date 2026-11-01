@@ -115,7 +115,8 @@ sudo install -o root -g root -m 0644 "$DAP_DIR/dap-admin.service" /etc/systemd/s
 sudo systemctl daemon-reload
 sudo systemctl enable dap.service
 sudo systemctl enable --now battery-monitor.service
-sudo systemctl enable --now dap-admin.service
+sudo systemctl enable dap-admin.service
+sudo systemctl restart dap-admin.service || sudo systemctl start dap-admin.service
 sudo nginx -t
 sudo systemctl enable --now nginx.service
 sudo systemctl reload nginx.service
