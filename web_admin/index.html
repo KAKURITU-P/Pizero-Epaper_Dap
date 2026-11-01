@@ -61,6 +61,8 @@
     .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
     .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
+    .favorite-order-row { cursor: grab; }
+    .favorite-order-row.dragging { opacity: .45; }
     .favorite-tree { gap: 4px; }
     .favorite-tree details { margin-left: 12px; }
     .favorite-tree summary { cursor: pointer; padding: 5px 0; font-weight: 650; }
@@ -126,8 +128,9 @@
       <div class="favorite-panels">
         <div class="favorite-panel">
           <h3>再生順</h3>
-          <p class="muted">お気に入り曲の再生順を上下ボタンで変更できます。</p>
+          <p class="muted">曲をドラッグして並べ替え、保存ボタンで反映します。</p>
           <div id="favorite-order" class="favorite-list"><div class="muted">読み込み中…</div></div>
+          <div class="actions"><button id="save-favorites">お気に入り順を保存</button></div>
           <p id="favorite-order-message" class="message"></p>
         </div>
         <div class="favorite-panel">
@@ -158,6 +161,8 @@
       const node = $(id); node.textContent = text; node.className = `message ${kind}`;
     }
     let lastApActive = null;
+    let favoriteOrder = [];
+    let favoriteOrderDirty = false;
     function size(bytes) {
       let value = Number(bytes), unit = "B";
       for (const next of ["KB", "MB", "GB", "TB"]) { if (value < 1024) break; value /= 1024; unit = next; }
@@ -193,12 +198,38 @@
     async function loadFavorites() {
       try {
         const result = await api("/api/favorites");
+        favoriteOrder = result.favorites.map(track => track.path);
+        favoriteOrderDirty = false;
+        $("save-favorites").disabled = false;
         const orderList = $("favorite-order"); orderList.replaceChildren();
         if (!result.favorites.length) {
           orderList.innerHTML = '<div class="muted">お気に入り曲がありません。</div>';
         } else {
           for (const [index, track] of result.favorites.entries()) {
-            const row = document.createElement("div"); row.className = "favorite-row";
+            const row = document.createElement("div"); row.className = "favorite-row favorite-order-row";
+            row.draggable = true;
+            row.dataset.path = track.path;
+            row.addEventListener("dragstart", () => {
+              row.classList.add("dragging");
+            });
+            row.addEventListener("dragend", () => {
+              row.classList.remove("dragging");
+            });
+            row.addEventListener("dragover", event => event.preventDefault());
+            row.addEventListener("drop", event => {
+              event.preventDefault();
+              const dragged = orderList.querySelector(".dragging");
+              if (!dragged || dragged === row) return;
+              const rows = [...orderList.querySelectorAll(".favorite-order-row")];
+              const from = rows.indexOf(dragged);
+              const to = rows.indexOf(row);
+              if (from < to) row.after(dragged);
+              else row.before(dragged);
+              favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
+              favoriteOrderDirty = true;
+              $("save-favorites").disabled = false;
+              message("favorite-order-message", "並び替えを変更しました。保存してください。");
+            });
             const text = document.createElement("div");
             const name = document.createElement("strong"); name.textContent = `${index + 1}. ${track.name}`;
             const path = document.createElement("small"); path.textContent = track.path;
@@ -216,7 +247,16 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ path: track.path, move: direction })
                   });
-                  await loadFavorites();
+                  const rows = [...orderList.querySelectorAll(".favorite-order-row")];
+                  const current = rows.find(item => item.dataset.path === track.path);
+                  const target = direction === "up" ? current?.previousElementSibling : current?.nextElementSibling;
+                  if (current && target) {
+                    if (direction === "up") target.before(current);
+                    else target.after(current);
+                    favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
+                    favoriteOrderDirty = true;
+                    message("favorite-order-message", "並び替えを変更しました。保存してください。");
+                  }
                 } catch (error) {
                   message("favorite-order-message", error.message, "error");
                   button.disabled = false;
@@ -306,6 +346,22 @@
         renderTree(root, list);
       } catch (error) { message("favorites-message", error.message, "error"); }
     }
+    $("save-favorites").onclick = async () => {
+      const button = $("save-favorites");
+      button.disabled = true;
+      try {
+        await api("/api/favorites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ favorites: favoriteOrder })
+        });
+        favoriteOrderDirty = false;
+        message("favorite-order-message", "お気に入り順を保存しました。", "success");
+      } catch (error) {
+        button.disabled = false;
+        message("favorite-order-message", error.message, "error");
+      }
+    };
     for (let channel = 1; channel <= 13; channel++) { const option = document.createElement("option"); option.value = channel; option.textContent = channel; $("ap-channel").append(option); }
     $("scan").onclick = async () => {
       $("scan").disabled = true; message("wifi-message", "検索しています…");
