@@ -275,6 +275,7 @@ library_tree = {}
 library_menu_entries = []
 current_track_idx = 0
 favorites_list = []
+favorites_file_mtime = None
 playback_history = []
 is_shuffle = False
 
@@ -337,20 +338,46 @@ def save_settings():
             pass
 
 def load_favorites():
-    global favorites_list
+    global favorites_list, favorites_file_mtime
     if os.path.exists(FAV_FILE):
         try:
             with open(FAV_FILE, "r", encoding="utf-8") as f:
-                favorites_list = json.load(f)
+                data = json.load(f)
+            if not isinstance(data, list) or not all(isinstance(path, str) for path in data):
+                raise ValueError("favorites.json must contain a JSON array of paths")
+            favorites_list = data
+            favorites_file_mtime = os.stat(FAV_FILE).st_mtime_ns
         except Exception:
             favorites_list = []
+            favorites_file_mtime = None
+    else:
+        favorites_file_mtime = None
 
 def save_favorites():
+    global favorites_file_mtime
+    temp_file = FAV_FILE + ".tmp"
     try:
-        with open(FAV_FILE, "w", encoding="utf-8") as f:
+        with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(favorites_list, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_file, FAV_FILE)
+        favorites_file_mtime = os.stat(FAV_FILE).st_mtime_ns
     except Exception as e:
         print(f"Fav save error: {e}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass
+
+def sync_favorites():
+    """管理画面など別プロセスによるお気に入り更新を取り込む"""
+    try:
+        mtime = os.stat(FAV_FILE).st_mtime_ns
+    except OSError:
+        return
+    if mtime != favorites_file_mtime:
+        load_favorites()
 
 def load_playback_history():
     global playback_history
@@ -413,6 +440,7 @@ def record_playback_history(filepath):
 def toggle_favorite_by_path(filepath):
     """指定されたファイルパスをお気に入りに追加/削除する"""
     global favorites_list
+    sync_favorites()
     if filepath in favorites_list:
         favorites_list.remove(filepath)
         is_fav = False
@@ -2382,6 +2410,7 @@ def get_bt_scanned_devices_snapshot():
 
 def update_menu_items(reset_cursor=True):
     global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
+    sync_favorites()
     if reset_cursor:
         cursor_idx = 0
         scroll_offset = 0
