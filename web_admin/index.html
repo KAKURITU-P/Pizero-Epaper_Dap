@@ -44,8 +44,10 @@
     .favorite-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .favorite-panel { min-width: 0; }
     .favorite-panel h3 { margin-top: 4px; }
+    .settings-panels { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .settings-panels > section { min-width: 0; }
     @media (max-width: 760px) {
-      .favorite-panels { grid-template-columns: 1fr; }
+      .favorite-panels, .settings-panels { grid-template-columns: 1fr; }
     }
     @media (prefers-color-scheme: dark) {
       :root { color: #e8edf1; background: #111820; }
@@ -66,18 +68,34 @@
       <p id="status-message" class="message"></p>
     </section>
 
-    <section>
-      <h2>Wi-Fi接続先を追加</h2>
-      <p class="muted">APモードをOFFにしてから検索・接続してください。追加したネットワークはNetworkManagerに保存されます。</p>
-      <div class="network-row">
-        <div><label for="networks">周辺のネットワーク</label><select id="networks"><option value="">検索してください</option></select></div>
-        <button id="scan">検索</button>
-      </div>
-      <label for="wifi-password">パスワード（オープンネットワークは空欄）</label>
-      <input id="wifi-password" type="password" autocomplete="new-password">
-      <div class="actions"><button id="connect">このWi-Fiを追加して接続</button></div>
-      <p id="wifi-message" class="message"></p>
-    </section>
+    <div class="settings-panels">
+      <section>
+        <h2>Wi-Fi接続先を追加</h2>
+        <p class="muted">APモードをOFFにしてから検索・接続してください。追加したネットワークはNetworkManagerに保存されます。</p>
+        <div class="network-row">
+          <div><label for="networks">周辺のネットワーク</label><select id="networks"><option value="">検索してください</option></select></div>
+          <button id="scan">検索</button>
+        </div>
+        <label for="wifi-password">パスワード（オープンネットワークは空欄）</label>
+        <input id="wifi-password" type="password" autocomplete="new-password">
+        <div class="actions"><button id="connect">このWi-Fiを追加して接続</button></div>
+        <p id="wifi-message" class="message"></p>
+      </section>
+
+      <section>
+        <h2>AP設定</h2>
+        <div class="grid">
+          <div><label for="ap-ssid">SSID</label><input id="ap-ssid" maxlength="32"></div>
+          <div><label for="ap-password">パスワード</label><input id="ap-password" type="password" autocomplete="new-password"></div>
+          <div><label for="ap-country">国コード</label><input id="ap-country" maxlength="2"></div>
+          <div><label for="ap-channel">チャンネル</label><select id="ap-channel"></select></div>
+        </div>
+        <div class="actions"><button id="save-ap">AP設定を保存</button><button class="secondary" id="refresh-ap">再読込</button></div>
+        <p class="muted">AP起動中に設定を変更した場合は、本体の接続設定からAPをOFF→ONにしてください。</p>
+        <div class="qr-row"><img id="qr" alt="AP接続用Wi-Fi QRコード"><span class="muted">スマートフォンのカメラで読み取るとDAPのAPへ接続できます。</span></div>
+        <p id="ap-message" class="message"></p>
+      </section>
+    </div>
 
     <section class="wide">
       <h2>お気に入り曲</h2>
@@ -95,20 +113,6 @@
           <p id="favorites-message" class="message"></p>
         </div>
       </div>
-    </section>
-
-    <section>
-      <h2>AP設定</h2>
-      <div class="grid">
-        <div><label for="ap-ssid">SSID</label><input id="ap-ssid" maxlength="32"></div>
-        <div><label for="ap-password">パスワード</label><input id="ap-password" type="password" autocomplete="new-password"></div>
-        <div><label for="ap-country">国コード</label><input id="ap-country" maxlength="2"></div>
-        <div><label for="ap-channel">チャンネル</label><select id="ap-channel"></select></div>
-      </div>
-      <div class="actions"><button id="save-ap">AP設定を保存</button><button class="secondary" id="refresh-ap">再読込</button></div>
-      <p class="muted">AP起動中に設定を変更した場合は、本体の接続設定からAPをOFF→ONにしてください。</p>
-      <div class="qr-row"><img id="qr" alt="AP接続用Wi-Fi QRコード"><span class="muted">スマートフォンのカメラで読み取るとDAPのAPへ接続できます。</span></div>
-      <p id="ap-message" class="message"></p>
     </section>
 
     <section class="wide">
@@ -233,7 +237,7 @@
         function renderTree(folder, container) {
           for (const [name, child] of [...folder.folders.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
             const details = document.createElement("details"); details.open = true;
-            const summary = document.createElement("summary"); summary.textContent = `📁 ${name}`;
+            const summary = document.createElement("summary"); summary.textContent = `[F] ${name}`;
             details.append(summary); container.append(details);
             renderTree(child, details);
           }
