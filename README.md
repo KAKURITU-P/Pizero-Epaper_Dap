@@ -117,6 +117,8 @@ APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変�
 sudo htpasswd -m /etc/nginx/dap-admin.htpasswd pi
 ```
 
+Wi-Fi検索と接続は、セットアップで root 所有として配置する `/usr/local/sbin/dap-web-wifi` ヘルパー経由で実行します。sudoers ではこの専用ヘルパーだけを追加許可し、Web管理サービスにNetworkManagerの一般的な管理権限は付与しません。
+
 ブラウザーで `http://<PiのIPアドレス>/` を開きます。管理画面はHTTPで提供するため、インターネットへ公開せず、DAPに接続できる信頼したLANまたはAP内で使用してください。
 
 音楽ファイルのアップロードと削除はDUFSを使います。DUFSがインストール済みなら、`/home/pi/music`を配信し、ローカルだけで待ち受けるよう起動オプションを設定してください。管理画面の「DUFSを開く」は`/files/`へ接続します。

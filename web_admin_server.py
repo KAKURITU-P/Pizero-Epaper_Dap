@@ -99,79 +99,36 @@ def wifi_qr_svg(config):
     return output.getvalue()
 
 
-def parse_nmcli_fields(line):
-    fields, current, escaped = [], [], False
-    for char in line:
-        if escaped:
-            current.append(char)
-            escaped = False
-        elif char == "\\":
-            escaped = True
-        elif char == ":":
-            fields.append("".join(current))
-            current = []
-        else:
-            current.append(char)
-    if escaped:
-        current.append("\\")
-    fields.append("".join(current))
-    return fields
+def run_wifi_helper(request, timeout=30):
+    result = subprocess.run(
+        ["sudo", "-n", "/usr/local/sbin/dap-web-wifi"],
+        input=json.dumps(request, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    try:
+        response = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError((result.stderr or "Wi-Fi操作ヘルパーの応答を読めません").strip()) from error
+    if result.returncode != 0 or not response.get("ok"):
+        raise RuntimeError(response.get("error") or result.stderr.strip() or "Wi-Fi操作に失敗しました")
+    return response
 
 
 def scan_wifi():
     if ap_is_active():
         raise RuntimeError("APモード中はWi-Fi一覧を検索できません。APをOFFにしてください")
-    unblock = run(["sudo", "rfkill", "unblock", "wlan"], timeout=10)
-    if unblock.returncode != 0:
-        raise RuntimeError((unblock.stderr or "Wi-Fi無線を有効にできません").strip())
-    radio = run(["nmcli", "radio", "wifi", "on"], timeout=10)
-    if radio.returncode != 0:
-        raise RuntimeError((radio.stderr or "Wi-FiをONにできません").strip())
-    result = run(
-        ["nmcli", "-t", "--escape", "yes", "-f", "SSID,SECURITY,SIGNAL",
-         "device", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"],
-        timeout=25,
-    )
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or "Wi-Fi検索に失敗しました").strip())
-    networks, seen = [], set()
-    for line in result.stdout.splitlines():
-        fields = parse_nmcli_fields(line)
-        if len(fields) < 3 or not fields[0].strip():
-            continue
-        ssid, security = fields[0].strip(), fields[1].strip()
-        try:
-            signal = max(0, min(100, int(fields[2])))
-        except ValueError:
-            signal = 0
-        if ssid in seen:
-            continue
-        seen.add(ssid)
-        networks.append({"ssid": ssid, "security": security, "signal": signal})
-    networks.sort(key=lambda item: (-item["signal"], item["ssid"].casefold()))
-    return networks
+    return run_wifi_helper({"action": "scan"}, timeout=35).get("networks", [])
 
 
 def connect_wifi_worker(ssid, password):
     global WIFI_JOB
     try:
-        if ap_is_active():
-            raise RuntimeError("APモードをOFFにしてからWi-Fiへ接続してください")
-        unblock = run(["sudo", "rfkill", "unblock", "wlan"], timeout=10)
-        if unblock.returncode != 0:
-            raise RuntimeError((unblock.stderr or "Wi-Fi無線を有効にできません").strip())
-        radio = run(["nmcli", "radio", "wifi", "on"], timeout=10)
-        if radio.returncode != 0:
-            raise RuntimeError((radio.stderr or "Wi-FiをONにできません").strip())
-        command = ["nmcli", "--wait", "45", "device", "wifi", "connect", ssid]
-        if password:
-            command.extend(["password", password])
-        command.extend(["ifname", "wlan0"])
-        result = run(command, timeout=55)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "接続に失敗しました").strip())
+        result = run_wifi_helper({"action": "connect", "ssid": ssid, "password": password}, timeout=60)
         with WIFI_JOB_LOCK:
-            WIFI_JOB = {"state": "success", "ssid": ssid, "message": "接続先を保存しました"}
+            WIFI_JOB = {"state": "success", "ssid": ssid, "message": result.get("message", "接続先を保存しました")}
     except (OSError, subprocess.SubprocessError, RuntimeError) as error:
         with WIFI_JOB_LOCK:
             WIFI_JOB = {"state": "error", "ssid": ssid, "message": str(error)}

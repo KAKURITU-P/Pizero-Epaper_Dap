@@ -50,7 +50,9 @@ Cmnd_Alias DAP_POWER = \
     /usr/sbin/reboot, \
     /usr/sbin/shutdown -h now
 
-pi ALL=(root) NOPASSWD: DAP_RFKILL, DAP_SYSTEMCTL, DAP_PROCESS, DAP_NETWORK, DAP_POWER
+Cmnd_Alias DAP_WEB_WIFI = /usr/local/sbin/dap-web-wifi
+
+pi ALL=(root) NOPASSWD: DAP_RFKILL, DAP_SYSTEMCTL, DAP_PROCESS, DAP_NETWORK, DAP_POWER, DAP_WEB_WIFI
 EOF
 
 chown root:root "$sudoers_tmp"

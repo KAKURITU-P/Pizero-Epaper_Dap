@@ -89,6 +89,7 @@ chmod 600 "$DAP_DIR/ap_config.json"
 echo "AP設定: $DAP_DIR/ap_config.json (初期パスワードは必ず変更してください)"
 
 echo "=== DAP サービス用 sudo 権限を設定 ==="
+sudo install -o root -g root -m 0755 "$DAP_DIR/tools/dap-web-wifi.py" /usr/local/sbin/dap-web-wifi
 sudo bash "$DAP_DIR/tools/configure_dap_sudoers.sh"
 
 echo "=== Web管理画面を設定 ==="
