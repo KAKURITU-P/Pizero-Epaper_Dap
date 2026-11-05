@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 BASE_DIR = Path(__file__).resolve().parent
 AP_CONFIG = BASE_DIR / "ap_config.json"
 PAGE_FILE = BASE_DIR / "web_admin" / "index.html"
+PHOTO_FILE = BASE_DIR / "ships.png"
 WIFI_JOB = {"state": "idle", "ssid": "", "message": ""}
 WIFI_JOB_LOCK = threading.Lock()
 FAVORITES_LOCK = threading.Lock()
@@ -533,6 +534,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == "/ships.png":
+                body = PHOTO_FILE.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=3600")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
