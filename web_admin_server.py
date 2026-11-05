@@ -154,7 +154,18 @@ def github_update_worker():
             detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
             raise RuntimeError(detail)
 
-        set_github_update("restarting", "更新しました。管理画面を再起動します")
+        set_github_update("restarting", "更新しました。本体と管理画面を再起動します")
+        dap_restart = subprocess.run(
+            ["sudo", "-n", "systemctl", "restart", "dap.service"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
+        )
+        if dap_restart.returncode != 0:
+            detail = (dap_restart.stderr or dap_restart.stdout or "本体サービスを再起動できません").strip()[-180:]
+            raise RuntimeError(detail)
         time.sleep(1.5)
         os.execv(sys.executable, [sys.executable, str(BASE_DIR / "web_admin_server.py")])
     except Exception as error:
