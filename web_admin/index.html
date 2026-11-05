@@ -87,8 +87,8 @@
     .favorite-panel h3 { margin-top: 4px; }
     .settings-panels { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
     .settings-panels > section { min-width: 0; }
-    .secret-photo { display: flex; align-items: center; justify-content: center; min-height: 180px; padding: 8px; overflow: hidden; }
-    .secret-photo img { display: block; width: min(100%, 220px); height: 180px; object-fit: cover; opacity: .88; }
+    .secret-photo { display: flex; flex-direction: column; min-width: 0; }
+    .secret-photo img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; opacity: .88; }
     @media (max-width: 760px) {
       .favorite-panels, .settings-panels { grid-template-columns: 1fr; }
       .favorite-list, .favorite-tree { height: auto; max-height: 420px; }
@@ -152,7 +152,8 @@
       </section>
 
       <section class="secret-photo" aria-hidden="true">
-        <img src="/ships.png" alt="">
+        <h2>おまけ</h2>
+        <img src="/web.png" alt="">
       </section>
     </div>
 
