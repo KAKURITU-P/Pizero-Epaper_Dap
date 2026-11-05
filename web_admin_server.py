@@ -25,7 +25,14 @@ SSID_MAX_BYTES = 32
 MUSIC_DIR = Path("/home/pi/music")
 FAVORITES_FILE = BASE_DIR / "favorites.json"
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
-GITHUB_UPDATE = {"state": "idle", "message": ""}
+GITHUB_UPDATE = {
+    "state": "idle",
+    "message": "",
+    "remote": "",
+    "branch": "",
+    "current": {},
+    "latest": {},
+}
 GITHUB_UPDATE_LOCK = threading.Lock()
 
 
@@ -49,6 +56,58 @@ def get_github_update():
 def set_github_update(state, message):
     with GITHUB_UPDATE_LOCK:
         GITHUB_UPDATE.update({"state": state, "message": message})
+
+
+def git_revision_info(fetch=False):
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def run_git(args, timeout=15):
+        return subprocess.run(
+            ["git", "-C", str(BASE_DIR), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+
+    remote = run_git(["remote", "get-url", "origin"])
+    current = run_git(["log", "-1", "--format=%H%x00%h%x00%s"])
+    branch = run_git(["branch", "--show-current"])
+    if remote.returncode != 0 or current.returncode != 0:
+        raise RuntimeError("Gitリポジトリ情報を取得できません")
+
+    def revision(result):
+        full, short, subject = result.stdout.strip().split("\x00", 2)
+        return {"hash": short, "full_hash": full, "subject": subject}
+
+    info = {
+        "remote": remote.stdout.strip(),
+        "branch": branch.stdout.strip() or "(detached HEAD)",
+        "current": revision(current),
+        "latest": None,
+    }
+    if fetch:
+        fetched = run_git(["fetch", "--quiet", "origin", "main"], timeout=120)
+        if fetched.returncode != 0:
+            raise RuntimeError((fetched.stderr or "GitHubからの取得に失敗しました").strip()[-180:])
+        latest = run_git(["log", "-1", "--format=%H%x00%h%x00%s", "FETCH_HEAD"])
+        if latest.returncode != 0:
+            raise RuntimeError("GitHubの最新コミットを取得できません")
+        info["latest"] = revision(latest)
+    return info
+
+
+def refresh_github_info():
+    info = git_revision_info(fetch=True)
+    with GITHUB_UPDATE_LOCK:
+        GITHUB_UPDATE.update(info)
+        if info["current"]["full_hash"] == info["latest"]["full_hash"]:
+            GITHUB_UPDATE.update({"state": "latest", "message": "GitHubは最新です"})
+        else:
+            GITHUB_UPDATE.update({"state": "ready", "message": "更新があります"})
+    return get_github_update()
 
 
 def github_update_worker():
@@ -80,11 +139,13 @@ def github_update_worker():
         if head.returncode != 0 or target.returncode != 0:
             raise RuntimeError("更新対象の版を確認できません")
         if head.stdout.strip() == target.stdout.strip():
+            refresh_github_info()
             set_github_update("latest", "GitHubは最新です")
             return
 
         ancestor = run_git(["merge-base", "--is-ancestor", target.stdout.strip(), "HEAD"], timeout=15)
         if ancestor.returncode == 0:
+            refresh_github_info()
             set_github_update("latest", "GitHubは最新です")
             return
 
@@ -491,6 +552,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(dict(WIFI_JOB))
             elif path == "/api/update":
                 self.send_json(get_github_update())
+            elif path == "/api/update/check":
+                self.send_json(refresh_github_info())
             elif path == "/api/favorites":
                 self.send_json(get_favorites())
             else:
