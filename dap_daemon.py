@@ -134,11 +134,17 @@ os.environ['SDL_AUDIODRIVER'] = 'alsa'
 volume = 0.2
 
 def set_cur_volume(vol):
-    """0.0~1.0 の線形値を、人間の聴感に合わせた2乗カーブに変換して設定"""
+    """画面音量を指定されたALSA音量値へ変換して設定する。"""
     if pygame.mixer.get_init():
-        # 人間の耳に合わせて2乗カーブ（vol ** 2）を適用
-        # よりゆるやかにしたい場合は vol ** 3（3乗）にする
-        scaled_vol = vol ** 2
+        alsa_levels = (
+            0.00, 0.01, 0.02, 0.03, 0.04,
+            0.06, 0.08, 0.11, 0.15, 0.20,
+            0.25, 0.30, 0.36, 0.42, 0.49,
+            0.56, 0.64, 0.72, 0.81, 0.90,
+            1.00,
+        )
+        level_index = max(0, min(20, int(round(vol * 20))))
+        scaled_vol = alsa_levels[level_index]
         pygame.mixer.music.set_volume(scaled_vol)
 
 def safe_init_audio():
