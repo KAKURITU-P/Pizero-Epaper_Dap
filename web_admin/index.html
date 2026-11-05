@@ -11,13 +11,13 @@
     header { background: #17324d; color: white; padding: 18px max(18px, calc((100vw - 980px) / 2)); }
     header h1 { margin: 0; font-size: 1.35rem; }
     main { max-width: 980px; margin: 18px auto; padding: 0 14px 30px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
-    section { background: white; border: 1px solid #dce3e9; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px #1020300c; }
+    section { background: white; border: 1px solid #c9d2da; border-radius: 2px; padding: 16px; }
     section h2 { font-size: 1.08rem; margin: 0 0 12px; }
     .wide { grid-column: 1 / -1; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     label { display: block; font-size: .9rem; margin: 9px 0 4px; }
-    input, select { width: 100%; box-sizing: border-box; font: inherit; padding: 9px; border: 1px solid #aebbc7; border-radius: 7px; background: Canvas; color: CanvasText; }
-    button, .button { display: inline-block; border: 0; border-radius: 7px; padding: 9px 13px; font: inherit; font-weight: 650; background: #1769aa; color: white; text-decoration: none; cursor: pointer; }
+    input, select { width: 100%; box-sizing: border-box; font: inherit; padding: 9px; border: 1px solid #9eacb8; border-radius: 2px; background: Canvas; color: CanvasText; }
+    button, .button { display: inline-block; border: 0; border-radius: 2px; padding: 9px 13px; font: inherit; font-weight: 650; background: #1769aa; color: white; text-decoration: none; cursor: pointer; }
     button.secondary, .button.secondary { background: #526575; }
     button:disabled { opacity: .55; cursor: wait; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
@@ -26,7 +26,7 @@
     .error { color: #b42318; }
     .success { color: #16713b; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 9px; }
-    .status-item { background: #f4f7f9; border-radius: 8px; padding: 10px; }
+    .status-item { background: #f4f7f9; border: 1px solid #e0e6eb; border-radius: 2px; padding: 10px; }
     .status-item small { display: block; color: #64727d; }
     .status-item strong { overflow-wrap: anywhere; }
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
@@ -36,6 +36,7 @@
       display: grid;
       gap: 6px;
       height: 420px;
+      align-content: start;
       overflow-y: auto;
       overflow-x: hidden;
       margin-top: 10px;
@@ -57,16 +58,30 @@
     .favorite-list::-webkit-scrollbar-thumb:hover, .favorite-tree::-webkit-scrollbar-thumb:hover {
       background: #9ab0bf;
     }
-    .favorite-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; background: #f4f7f9; border-radius: 7px; }
+    .favorite-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px 10px; background: #f4f7f9; border: 1px solid #dce4ea; border-radius: 2px; }
     .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
     .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
     .favorite-order-row { cursor: grab; }
     .favorite-order-row.dragging { opacity: .45; }
-    .favorite-tree { gap: 4px; }
-    .favorite-tree details { margin-left: 12px; }
-    .favorite-tree summary { cursor: pointer; padding: 5px 0; font-weight: 650; }
-    .favorite-tree .favorite-row { margin: 3px 0; }
+    .favorite-tree { gap: 5px; }
+    .favorite-tree details {
+      margin: 0;
+      border: 1px solid #cbd6df;
+      background: #f7f9fa;
+      border-radius: 2px;
+    }
+    .favorite-tree details details { margin: 5px 0 0 14px; }
+    .favorite-tree summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      color: #17324d;
+      font-weight: 650;
+      list-style-position: inside;
+    }
+    .favorite-tree details > .favorite-row { margin: 0 5px 5px; }
+    .favorite-tree details > details:last-child,
+    .favorite-tree details > .favorite-row:last-child { margin-bottom: 5px; }
     .favorite-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
     .favorite-panel { min-width: 0; }
     .favorite-panel h3 { margin-top: 4px; }
@@ -78,8 +93,9 @@
     @media (prefers-color-scheme: dark) {
       :root { color: #e8edf1; background: #111820; }
       section { background: #1b2731; border-color: #34424d; }
-      .status-item { background: #24323d; }
-      .favorite-row { background: #24323d; }
+      .status-item, .favorite-row, .favorite-tree details { background: #24323d; }
+      .favorite-tree details { border-color: #53616d; }
+      .favorite-tree summary { color: #e8edf1; }
       .muted, .status-item small { color: #b4c0c9; }
       input, select { border-color: #53616d; }
     }
@@ -121,6 +137,13 @@
         <p class="muted">AP起動中に設定を変更した場合は、本体の接続設定からAPをOFF→ONにしてください。</p>
         <div class="qr-row"><img id="qr" alt="AP接続用Wi-Fi QRコード"><span class="muted">スマートフォンのカメラで読み取るとDAPのAPへ接続できます。</span></div>
         <p id="ap-message" class="message"></p>
+      </section>
+
+      <section>
+        <h2>システム更新</h2>
+        <p class="muted">GitHubのmainブランチから安全に更新します。更新後は管理画面が自動で再起動します。</p>
+        <div class="actions"><button id="github-update">GitHubから更新</button></div>
+        <p id="github-update-message" class="message"></p>
       </section>
     </div>
 
@@ -406,7 +429,33 @@
       } catch (error) { message("ap-message", error.message, "error"); }
     };
     $("refresh-ap").onclick = loadAp;
-    loadAp(); loadFavorites(); refreshStatus(); setInterval(refreshStatus, 10000);
+    let updatePolling = null;
+    async function refreshGithubUpdate() {
+      try {
+        const update = await api("/api/update");
+        const button = $("github-update");
+        button.disabled = update.state === "running" || update.state === "restarting";
+        message("github-update-message", update.message || "");
+        if (update.state === "restarting") {
+          clearInterval(updatePolling);
+          setTimeout(() => window.location.reload(), 2500);
+        }
+      } catch (error) { message("github-update-message", error.message, "error"); }
+    }
+    $("github-update").onclick = async () => {
+      if (!window.confirm("GitHubから更新して管理画面を再起動します。実行しますか？")) return;
+      $("github-update").disabled = true;
+      try {
+        await api("/api/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        await refreshGithubUpdate();
+        clearInterval(updatePolling);
+        updatePolling = setInterval(refreshGithubUpdate, 2000);
+      } catch (error) {
+        message("github-update-message", error.message, "error");
+        $("github-update").disabled = false;
+      }
+    };
+    loadAp(); loadFavorites(); refreshStatus(); refreshGithubUpdate(); setInterval(refreshStatus, 10000);
   </script>
 </body>
 </html>
