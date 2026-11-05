@@ -82,6 +82,16 @@ def get_battery_info():
         pass
     return pct_str, volt_str
 
+def get_battery_percent():
+    pct_str, _ = get_battery_info()
+    match = re.search(r"-?\d+(?:\.\d+)?", pct_str)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
 # --- mutagen によるメタデータ取得 ---
 try:
     import mutagen
@@ -286,6 +296,7 @@ repeat_mode = 0
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
 sleep_timer_pending = False  
+battery_shutdown_pending = False
 
 # イースターエッグ & EQ 関連変数
 easter_click_count = 0
@@ -3094,8 +3105,9 @@ btn_play_back.when_pressed   = on_btn_play_or_back
 def handle_track_completion():
     global is_playing, current_track_idx
 
-    if sleep_timer_pending:
-        clean_shutdown_display("Sleep Timer Off...")
+    if sleep_timer_pending or battery_shutdown_pending:
+        message = "Battery Empty..." if battery_shutdown_pending else "Sleep Timer Off..."
+        clean_shutdown_display(message)
         subprocess.run(["sudo", "shutdown", "-h", "now"])
         return
 
@@ -3139,6 +3151,11 @@ try:
         now = time.time()
         sync_favorites()
 
+        # 0%になっても再生中の曲は最後まで再生してから電源を切る。
+        battery_percent = get_battery_percent()
+        if battery_percent is not None and battery_percent <= 0:
+            battery_shutdown_pending = True
+
         # --- スリープタイマー監視 ---
         # 時間が来たら即シャットダウンせず、待機フラグを立てる
         if sleep_timer_end_time > 0 and now >= sleep_timer_end_time:
@@ -3146,8 +3163,9 @@ try:
             sleep_timer_end_time = 0.0  # 二重判定防止
 
         # 音楽が停止中にタイマー時間が来た場合はそのままシャットダウン
-        if sleep_timer_pending and not is_playing:
-            clean_shutdown_display("Sleep Timer Off...")
+        if (sleep_timer_pending or battery_shutdown_pending) and not is_playing:
+            message = "Battery Empty..." if battery_shutdown_pending else "Sleep Timer Off..."
+            clean_shutdown_display(message)
             subprocess.run(["sudo", "shutdown", "-h", "now"])
 
         # --- 曲の再生・終了監視 ---
