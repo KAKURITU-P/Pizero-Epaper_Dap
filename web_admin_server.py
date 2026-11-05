@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,6 +25,8 @@ SSID_MAX_BYTES = 32
 MUSIC_DIR = Path("/home/pi/music")
 FAVORITES_FILE = BASE_DIR / "favorites.json"
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
+GITHUB_UPDATE = {"state": "idle", "message": ""}
+GITHUB_UPDATE_LOCK = threading.Lock()
 
 
 def run(command, timeout=8):
@@ -35,6 +39,74 @@ def command_output(command, timeout=8):
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def get_github_update():
+    with GITHUB_UPDATE_LOCK:
+        return dict(GITHUB_UPDATE)
+
+
+def set_github_update(state, message):
+    with GITHUB_UPDATE_LOCK:
+        GITHUB_UPDATE.update({"state": state, "message": message})
+
+
+def github_update_worker():
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def run_git(args, timeout=120):
+        return subprocess.run(
+            ["git", "-C", str(BASE_DIR), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+
+    try:
+        remote = run_git(["remote", "get-url", "origin"], timeout=15)
+        remote_url = remote.stdout.strip().lower().removesuffix(".git")
+        if remote.returncode != 0 or "github.com/kakuritu-p/pizero-epaper_dap" not in remote_url:
+            raise RuntimeError("登録されたGitHub接続先が想定と異なるため中止しました")
+
+        fetched = run_git(["fetch", "--quiet", "origin", "main"])
+        if fetched.returncode != 0:
+            raise RuntimeError((fetched.stderr or "GitHubからの取得に失敗しました").strip()[-180:])
+
+        head = run_git(["rev-parse", "HEAD"], timeout=15)
+        target = run_git(["rev-parse", "FETCH_HEAD"], timeout=15)
+        if head.returncode != 0 or target.returncode != 0:
+            raise RuntimeError("更新対象の版を確認できません")
+        if head.stdout.strip() == target.stdout.strip():
+            set_github_update("latest", "GitHubは最新です")
+            return
+
+        ancestor = run_git(["merge-base", "--is-ancestor", target.stdout.strip(), "HEAD"], timeout=15)
+        if ancestor.returncode == 0:
+            set_github_update("latest", "GitHubは最新です")
+            return
+
+        merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
+        if merged.returncode != 0:
+            detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
+            raise RuntimeError(detail)
+
+        set_github_update("restarting", "更新しました。管理画面を再起動します")
+        time.sleep(1.5)
+        os.execv(sys.executable, [sys.executable, str(BASE_DIR / "web_admin_server.py")])
+    except Exception as error:
+        print(f"GitHub update error: {error}")
+        set_github_update("error", f"更新失敗: {str(error)[:120]}")
+
+
+def start_github_update():
+    with GITHUB_UPDATE_LOCK:
+        if GITHUB_UPDATE["state"] == "running":
+            raise RuntimeError("別の更新処理が進行中です")
+        GITHUB_UPDATE.update({"state": "running", "message": "GitHubから更新データを取得しています…"})
+    threading.Thread(target=github_update_worker, daemon=True).start()
 
 
 def get_bluetooth_codec(bluetooth_devices):
@@ -417,6 +489,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/wifi/job":
                 with WIFI_JOB_LOCK:
                     self.send_json(dict(WIFI_JOB))
+            elif path == "/api/update":
+                self.send_json(get_github_update())
             elif path == "/api/favorites":
                 self.send_json(get_favorites())
             else:
@@ -447,6 +521,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Wi-Fi暗号方式が不正です")
                 start_wifi_connect(ssid, security, password)
                 self.send_json({"state": "running", "ssid": ssid}, 202)
+            elif path == "/api/update":
+                start_github_update()
+                self.send_json(get_github_update(), 202)
             elif path == "/api/favorites":
                 if "favorites" in payload:
                     self.send_json(save_favorite_order(payload.get("favorites")))
