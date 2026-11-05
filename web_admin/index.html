@@ -153,7 +153,12 @@
 
       <section class="secret-photo" aria-hidden="true">
         <h2>おまけ</h2>
-        <img src="/web.png" alt="">
+        <img
+          src="https://github.com/user-attachments/assets/804c4d55-a4de-479a-8786-41ac80afd225"
+          alt=""
+          data-fallback="/web.png"
+          onerror="if (this.dataset.fallback) { const fallback = this.dataset.fallback; delete this.dataset.fallback; this.src = fallback; }"
+        >
       </section>
     </div>
 
