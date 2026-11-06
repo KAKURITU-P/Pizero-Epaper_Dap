@@ -180,7 +180,8 @@ def safe_init_audio():
 
         time.sleep(0.5)
         os.environ['SDL_AUDIODRIVER'] = 'alsa'
-        pygame.mixer.init(frequency=48000, size=-16, channels=2, buffer=8192)
+        frequency = 48000 if audio_output_mode == "BT" else 44100
+        pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=8192)
         set_cur_volume(volume)
         print(f"Audio initialized in [{audio_output_mode}] mode.")
     except Exception as e:
