@@ -187,7 +187,7 @@ SSID、パスワード、国コード、チャンネルは、DAP と同じディ
 
 ### BlueALSA手動接続の確認
 
-Bluetooth音声出力にはBlueALSAを使用します。接続完了後はBluetoothの接続状態だけでなく、対象機器のA2DP用BlueALSA PCMがALSAへ公開されたことを確認してから、`.asoundrc` とPygameの音声出力を切り替えます。
+Bluetooth音声出力にはBlueALSAを使用します。PWM/BTともALSAの`equal`経路を使用し、後段を48 kHz・ステレオ・S16_LEへ固定します。接続完了後はBluetoothの接続状態だけでなく、対象機器のA2DP用BlueALSA PCMがALSAへ公開されたことを確認してから、`.asoundrc` とPygameの音声出力を切り替えます。
 
 Bluetooth機器の接続は手動操作です。選択したMACアドレスの機器だけ、確認番号（パスキー）の承認を自動化します。PIN入力や未選択機器の承認、切断後のバックグラウンド自動再接続には対応していません。自動承認には `python3-dbus` と `python3-gi` が必要です。
 

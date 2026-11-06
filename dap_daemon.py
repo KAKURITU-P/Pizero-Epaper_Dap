@@ -30,6 +30,7 @@ except ImportError:
     HAS_DBUS_AGENT = False
 from bluealsa_utils import (
     build_bluealsa_asoundrc,
+    build_pwm_asoundrc,
     pcm_list_contains_device,
 )
 from network_parse_utils import (
@@ -122,6 +123,13 @@ if os.path.exists(asoundrc_path):
 else:
     audio_output_mode = "PWM"
 
+if audio_output_mode == "PWM":
+    try:
+        with open(asoundrc_path, "w", encoding="utf-8") as file:
+            file.write(build_pwm_asoundrc())
+    except OSError as error:
+        print(f"PWM ALSA設定更新失敗: {error}")
+
 # オーディオ経路は選択状態に合わせる。Wi-Fi / Bluetooth 無線状態は変更しない。
 if audio_output_mode == "BT":
     subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
@@ -172,12 +180,13 @@ def safe_init_audio():
 
         time.sleep(0.5)
         os.environ['SDL_AUDIODRIVER'] = 'alsa'
-        frequency = 48000 if audio_output_mode == "BT" else 44100
-        pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=8192)
+        pygame.mixer.init(frequency=48000, size=-16, channels=2, buffer=8192)
         set_cur_volume(volume)
         print(f"Audio initialized in [{audio_output_mode}] mode.")
     except Exception as e:
         print(f"Audio init failed ({e}).")
+
+
 safe_init_audio()
 
 # --- 2. e-Paper 初期化 ---
@@ -749,15 +758,9 @@ DEBOUNCE_TIME = 0.25
 state_lock = threading.Lock()
 
 def apply_eq_settings():
-    if audio_output_mode == "BT":
-        print("[EQ Apply] skipped for direct BlueALSA output")
-        return
-
     bass = eq_values["BASS"]
     mid = eq_values["MID"]
     treble = eq_values["TREBLE"]
-
-    print(f"[EQ Apply] BASS: {bass}, MID: {mid}, TREBLE: {treble}")
 
     def db_to_pct(val):
         pct = int(66 + (val * 5.6))
@@ -770,15 +773,12 @@ def apply_eq_settings():
     try:
         for band in ["00. 31 Hz", "01. 63 Hz", "02. 125 Hz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, bass_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
         for band in ["03. 250 Hz", "04. 500 Hz", "05. 1 kHz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, mid_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
         for band in ["06. 2 kHz", "07. 4 kHz", "08. 8 kHz", "09. 16 kHz"]:
             subprocess.run(["amixer", "-D", "equal", "sset", band, treble_pct], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    except Exception as e:
-        print(f"EQ Control Error: {e}")
+    except Exception as error:
+        print(f"EQ Control Error: {error}")
 
 apply_eq_settings()
 
@@ -1910,22 +1910,9 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
         subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
         time.sleep(0.5)
 
-        pwm_config = """pcm.!default {
-    type plug
-    slave.pcm "equal"
-}
-
-pcm.equal {
-    type equal
-    slave.pcm "plughw:0,0"
-}
-ctl.equal {
-    type equal
-}
-"""
         try:
-            with open(asoundrc_path, "w") as f:
-                f.write(pwm_config)
+            with open(asoundrc_path, "w", encoding="utf-8") as file:
+                file.write(build_pwm_asoundrc())
         except Exception as e:
             print(f"asoundrc write error: {e}")
 
