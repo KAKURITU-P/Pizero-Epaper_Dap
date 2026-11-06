@@ -5,7 +5,8 @@
 - MACアドレスを検証・正規化
 - `bluealsa:DEV=<MAC>,PROFILE=a2dp` 形式のPCM名を生成
 - 48 kHzの直接BlueALSA PCMを使う `.asoundrc` 設定を生成
-- BT出力時は`equal`/`plug`を使わず、ノイズを避ける
+- PWM/BTとも`equal`を使用し、後段のサンプル形式を48 kHz・ステレオ・S16_LEへ固定
+- `equal`の後段でBlueALSAへ直接渡さず、明示的なALSA構成で形式変換する
 - BlueALSA PCM一覧から対象機器の有無を判定
 
 今回のコミットでは、APモード、DAFS/Web機能、自動Bluetooth再接続、PIN入力は変更していません。

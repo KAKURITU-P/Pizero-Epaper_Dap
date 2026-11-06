@@ -43,18 +43,60 @@ def bluealsa_pcm_candidates(mac: str, interface: str = "hci0") -> tuple[str, ...
 
 
 def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
-    """Build an ALSA configuration for direct BlueALSA A2DP playback.
-
-    ``interface`` is retained for compatibility with callers of older releases.
-    The BlueALSA ALSA PCM plugin does not accept an ``interface`` field; the
-    daemon's default adapter is used instead.
-    """
+    """Build an ALSA equalizer route ending in a BlueALSA A2DP PCM."""
     normalized = normalize_mac(mac)
     return f'''pcm.!default {{
+    type plug
+    slave {{
+        pcm "equal"
+        rate 48000
+        format S16_LE
+        channels 2
+    }}
+}}
+
+pcm.equal {{
+    type equal
+    slave.pcm "dap_bt"
+}}
+
+pcm.dap_bt {{
     type bluealsa
     device "{normalized}"
     profile "a2dp"
 }}
+
+ctl.equal {{
+    type equal
+}}
+'''
+
+
+def build_pwm_asoundrc() -> str:
+    """Build an ALSA equalizer route ending in the PWM hardware."""
+    return '''pcm.!default {
+    type plug
+    slave {
+        pcm "equal"
+        rate 48000
+        format S16_LE
+        channels 2
+    }
+}
+
+pcm.equal {
+    type equal
+    slave.pcm "dap_pwm"
+}
+
+pcm.dap_pwm {
+    type plug
+    slave.pcm "plughw:0,0"
+}
+
+ctl.equal {
+    type equal
+}
 '''
 
 
