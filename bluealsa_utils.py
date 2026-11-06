@@ -57,6 +57,11 @@ def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
 
 pcm.equal {{
     type equal
+    slave.pcm "dap_bt_plug"
+}}
+
+pcm.dap_bt_plug {{
+    type plug
     slave.pcm "dap_bt"
 }}
 
