@@ -266,7 +266,7 @@ font_small  = get_font(12)
 font_clock  = get_font(30)
 
 def load_playback_mode_icons():
-    """Load the shuffle, repeat-one, and repeat-all glyphs from the sprite sheet."""
+    """Load playback mode and audio output glyphs from the sprite sheet."""
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
         boxes = {
@@ -274,10 +274,30 @@ def load_playback_mode_icons():
             "repeat_one": (12, 45, 44, 67),
             "repeat_all": (12, 79, 44, 101),
         }
+        # BT/PWM are placed in the right column of the updated sprite sheet.
+        if sheet.width >= 90:
+            boxes.update({
+                "pwm": (57, 8, 89, 30),
+                "bt": (57, 45, 89, 67),
+            })
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box).resize((18, 12), Image.Resampling.LANCZOS)
             icons[name] = icon.point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+        if "pwm" not in icons or "bt" not in icons:
+            fallback = Image.new("1", (18, 12), 1)
+            fallback_draw = ImageDraw.Draw(fallback)
+            fallback_draw.line(
+                [(1, 3), (4, 3), (4, 9), (7, 9), (7, 3), (10, 3),
+                 (10, 9), (13, 9), (13, 3), (16, 3)],
+                fill=0, width=1
+            )
+            icons.setdefault("pwm", fallback)
+
+            bt = Image.new("1", (18, 12), 1)
+            bt_draw = ImageDraw.Draw(bt)
+            bt_draw.line([(8, 1), (8, 11), (13, 6), (3, 1), (8, 6), (3, 11), (13, 6)], fill=0, width=1)
+            icons.setdefault("bt", bt)
         return icons
     except (OSError, ValueError) as error:
         print(f"再生モードアイコンを読み込めません: {error}")
@@ -1453,6 +1473,7 @@ def display_worker():
                 sel_alb = selected_album
                 playing = is_playing
                 cur_vol = volume
+                output_mode = audio_output_mode
                 stat_msg = status_message
                 resource_stats = (
                     dict(system_resource_snapshot)
@@ -1498,6 +1519,9 @@ def display_worker():
                     image.paste(playback_mode_icons["repeat_all"], (91, 3))
                 if timer_str:
                     draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
+                output_icon = playback_mode_icons.get(output_mode.lower())
+                if output_icon:
+                    image.paste(output_icon, (154, 3))
                 draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
