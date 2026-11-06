@@ -3370,7 +3370,11 @@ try:
                 is_playing = False
             elif not music_busy and not audio_transition_in_progress:
                 handle_track_completion()
-            elif total_duration_sec > 0 and cur_sec >= total_duration_sec + 1:
+            elif (
+                not audio_transition_in_progress
+                and total_duration_sec > 0
+                and cur_sec >= total_duration_sec + 1
+            ):
                 handle_track_completion()
 
         with state_lock:
