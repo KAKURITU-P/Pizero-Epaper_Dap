@@ -59,7 +59,7 @@ def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
 
 
 def pcm_list_contains_device(alsa_pcm_list: str, mac: str) -> bool:
-    """Return whether ``aplay -L`` output advertises the Bluetooth device."""
+    """Return whether BlueALSA output advertises the Bluetooth device."""
     normalized = normalize_mac(mac)
     compact = normalized.replace(":", "_").lower()
     upper = normalized.upper()
