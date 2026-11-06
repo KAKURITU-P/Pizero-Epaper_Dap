@@ -47,12 +47,7 @@ def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
     normalized = normalize_mac(mac)
     return f'''pcm.!default {{
     type plug
-    slave {{
-        pcm "equal"
-        rate 48000
-        format S16_LE
-        channels 2
-    }}
+    slave.pcm "equal"
 }}
 
 pcm.equal {{
