@@ -1847,15 +1847,18 @@ def connect_bt_device(mac, name="Unknown"):
                     safe_init_audio()
                     if not pygame.mixer.get_init():
                         raise RuntimeError("Pygame mixerの初期化に失敗しました")
-                    subprocess.run(
-                        ["amixer", "-D", "bluealsa", "sset", "Master", "100%"],
-                        check=False,
-                        timeout=5,
-                    )
+                    try:
+                        subprocess.run(
+                            ["amixer", "-D", "equal", "sset", "Master", "100%"],
+                            check=False,
+                            timeout=5,
+                        )
+                    except (OSError, subprocess.SubprocessError) as error:
+                        print(f"ALSA音量設定警告（再生は継続）: {error}")
                     apply_eq_settings()
                     status_message = "接続成功"
                 except Exception as error:
-                    print(f"BT ALSA設定エラー: {error}")
+                    print(f"BT ALSA設定エラー ({type(error).__name__}): {error}")
                     audio_output_mode = previous_audio_mode
                     connected_bt_mac = previous_connected_mac
                     status_message = "音声設定失敗"
