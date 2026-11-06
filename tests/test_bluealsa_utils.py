@@ -25,6 +25,8 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         self.assertIn('device "AA:BB:CC:DD:EE:FF"', config)
         self.assertIn('profile "a2dp"', config)
         self.assertIn('type equal', config)
+        self.assertIn('slave.pcm "dap_bt_plug"', config)
+        self.assertIn('pcm.dap_bt_plug', config)
         self.assertIn('rate 48000', config)
         self.assertIn('format S16_LE', config)
 
