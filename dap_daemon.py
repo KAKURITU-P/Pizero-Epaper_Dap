@@ -269,7 +269,7 @@ def load_playback_mode_icons():
     """Load playback mode and audio output glyphs from the sprite sheet."""
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
-        icon_size = (20, 14)
+        icon_size = (20, 12)
         boxes = {
             "shuffle": (5, 10, 44, 40),
             "repeat_one": (5, 43, 44, 73),
@@ -1532,16 +1532,16 @@ def display_worker():
 
                 draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
-                    image.paste(playback_mode_icons["shuffle"], (67, 1))
+                    image.paste(playback_mode_icons["shuffle"], (67, 2))
                 if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_one"], (90, 1))
+                    image.paste(playback_mode_icons["repeat_one"], (90, 2))
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_all"], (90, 1))
+                    image.paste(playback_mode_icons["repeat_all"], (90, 2))
                 if timer_str:
                     draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
                 output_icon = playback_mode_icons.get(output_mode.lower())
                 if output_icon:
-                    image.paste(output_icon, (152, 1))
+                    image.paste(output_icon, (152, 2))
                 draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
