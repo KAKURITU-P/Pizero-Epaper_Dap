@@ -78,24 +78,14 @@ ctl.equal {{
 
 
 def build_pwm_asoundrc() -> str:
-    """Build an ALSA equalizer route ending in the PWM hardware."""
+    """Build the proven PWM equalizer route."""
     return '''pcm.!default {
     type plug
-    slave {
-        pcm "equal"
-        rate 48000
-        format S16_LE
-        channels 2
-    }
+    slave.pcm "equal"
 }
 
 pcm.equal {
     type equal
-    slave.pcm "dap_pwm"
-}
-
-pcm.dap_pwm {
-    type plug
     slave.pcm "plughw:0,0"
 }
 

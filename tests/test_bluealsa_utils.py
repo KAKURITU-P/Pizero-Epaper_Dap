@@ -39,7 +39,8 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         config = build_pwm_asoundrc()
         self.assertIn('slave.pcm "plughw:0,0"', config)
         self.assertIn("type equal", config)
-        self.assertIn("rate 48000", config)
+        self.assertNotIn("rate 48000", config)
+        self.assertNotIn("dap_pwm", config)
 
     def test_pcm_list_detection(self):
         output = """null\n    Discard all samples\nbluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp\n    BT audio\n"""
