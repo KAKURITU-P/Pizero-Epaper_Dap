@@ -20,6 +20,14 @@ from collections import deque
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
+try:
+    import dbus
+    import dbus.service
+    from dbus.mainloop.glib import DBusGMainLoop
+    from gi.repository import GLib
+    HAS_DBUS_AGENT = True
+except ImportError:
+    HAS_DBUS_AGENT = False
 from bluealsa_utils import (
     build_bluealsa_asoundrc,
     pcm_list_contains_device,
@@ -999,21 +1007,22 @@ def is_bluealsa_active():
 
 
 def get_bluealsa_pcm_list():
-    """bluealsa-aplayが認識しているBluetooth PCM一覧を返す。"""
-    try:
-        result = subprocess.run(
-            ["bluealsa-aplay", "-L"],
-            capture_output=True,
-            text=True,
-            errors="ignore",
-            timeout=5,
-            check=False,
-        )
-        if result.returncode != 0:
-            return ""
-        return result.stdout or ""
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    """ALSAに公開されたBlueALSA PCM一覧を返す。"""
+    for command in (["aplay", "-L"], ["bluealsa-aplay", "-L"]):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                errors="ignore",
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+    return ""
 
 
 def wait_for_bluealsa_pcm(mac, timeout=10.0):
@@ -1075,6 +1084,101 @@ def get_bt_device_properties(mac):
 
 def bt_prop_is_yes(properties, key):
     return (properties.get(key, "") or "").strip().lower() == "yes"
+
+
+def start_bt_confirmation_agent(mac):
+    """Register a temporary Agent that confirms only the selected device."""
+    if not HAS_DBUS_AGENT:
+        print("BT自動承認を利用できません: python3-dbus/python3-giが未導入です")
+        return None
+
+    target_mac = mac.upper()
+    agent_path = "/org/pizero/dap/agent"
+    try:
+        DBusGMainLoop(set_as_default=True)
+        bus = dbus.SystemBus()
+        loop = GLib.MainLoop()
+
+        class ConfirmationAgent(dbus.service.Object):
+            def _is_target(self, device):
+                address = str(device.rsplit("/dev_", 1)[-1]).replace("_", ":").upper()
+                return address == target_mac
+
+            def _reject_unmatched(self, device):
+                if not self._is_target(device):
+                    raise dbus.exceptions.DBusException(
+                        "org.bluez.Error.Rejected",
+                        "Device is not the selected pairing target",
+                    )
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+            def Release(self):
+                pass
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+            def RequestPinCode(self, device):
+                self._reject_unmatched(device)
+                raise dbus.exceptions.DBusException(
+                    "org.bluez.Error.Rejected",
+                    "PIN entry is not supported",
+                )
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+            def DisplayPinCode(self, device, pincode):
+                self._reject_unmatched(device)
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+            def DisplayPasskey(self, device, passkey, entered):
+                self._reject_unmatched(device)
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+            def RequestPasskey(self, device):
+                self._reject_unmatched(device)
+                raise dbus.exceptions.DBusException(
+                    "org.bluez.Error.Rejected",
+                    "Passkey entry is not supported",
+                )
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+            def RequestConfirmation(self, device, passkey):
+                self._reject_unmatched(device)
+                print(f"BTパスキーを自動承認: {target_mac} ({int(passkey):06d})")
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+            def RequestAuthorization(self, device):
+                self._reject_unmatched(device)
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+            def AuthorizeService(self, device, uuid):
+                self._reject_unmatched(device)
+
+            @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+            def Cancel(self):
+                pass
+
+        agent = ConfirmationAgent(bus, agent_path)
+        manager = dbus.Interface(
+            bus.get_object("org.bluez", "/org/bluez"),
+            "org.bluez.AgentManager1",
+        )
+        manager.RegisterAgent(agent_path, "KeyboardDisplay")
+        manager.RequestDefaultAgent(agent_path)
+        thread = threading.Thread(target=loop.run, daemon=True)
+        thread.start()
+
+        def cleanup():
+            try:
+                manager.UnregisterAgent(agent_path)
+            except dbus.exceptions.DBusException as error:
+                print(f"BT Agent解除警告: {error}")
+            loop.quit()
+            agent.remove_from_connection()
+
+        return cleanup
+    except (OSError, dbus.exceptions.DBusException) as error:
+        print(f"BT自動承認Agentの登録失敗: {error}")
+        return None
+
 
 def format_bt_menu_name(name, mac, include_suffix=False):
     base = normalize_bt_name(name) or mac
@@ -1562,7 +1666,24 @@ def connect_bt_device(mac, name="Unknown"):
     subprocess.run(["sudo", "rfkill", "unblock", "bluetooth"], check=False)
     subprocess.run(["sudo", "systemctl", "start", "bluetooth"], check=False)
     subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False)
-    time.sleep(0.5)
+    bluetooth_ready = False
+    for _ in range(10):
+        service_state = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "bluetooth"],
+            check=False,
+            timeout=5,
+        )
+        if service_state.returncode == 0:
+            bluetooth_ready = True
+            break
+        time.sleep(0.3)
+    if not bluetooth_ready:
+        status_message = "Bluetooth起動失敗"
+        connected_bt_mac = previous_connected_mac
+        if previous_audio_mode == "PWM":
+            restore_pwm_after_failure()
+        request_display_update(is_full_refresh=True)
+        return
 
     def run_btctl(*args, timeout=15):
         try:
@@ -1602,20 +1723,29 @@ def connect_bt_device(mac, name="Unknown"):
     requires_user_confirmation = False
     if not bt_prop_is_yes(properties, "paired"):
         # 対話入力不可UIのため KeyboardDisplay を優先し、必要なら NoInputNoOutput にフォールバック。
-        pairing_session = run_btctl_session(
-            ["power on", "agent on", "agent KeyboardDisplay", "default-agent", f"pair {mac}", f"trust {mac}", f"connect {mac}"],
-            timeout=60,
-        )
-        session_output = ""
-        if pairing_session is not None:
-            session_output = "\n".join(part for part in (pairing_session.stdout, pairing_session.stderr) if part)
-        if not bt_prop_is_yes(get_bt_device_properties(mac), "paired"):
-            fallback_session = run_btctl_session(
-                ["power on", "agent on", "agent NoInputNoOutput", "default-agent", f"pair {mac}", f"trust {mac}", f"connect {mac}"],
+        agent_cleanup = start_bt_confirmation_agent(mac)
+        try:
+            pairing_commands = ["power on"]
+            if agent_cleanup is None:
+                pairing_commands.extend(["agent on", "agent KeyboardDisplay", "default-agent"])
+            pairing_commands.extend([f"pair {mac}", f"trust {mac}", f"connect {mac}"])
+            pairing_session = run_btctl_session(
+                pairing_commands,
                 timeout=60,
             )
-            if fallback_session is not None:
-                session_output = "\n".join(part for part in (session_output, fallback_session.stdout, fallback_session.stderr) if part)
+            session_output = ""
+            if pairing_session is not None:
+                session_output = "\n".join(part for part in (pairing_session.stdout, pairing_session.stderr) if part)
+            if agent_cleanup is None and not bt_prop_is_yes(get_bt_device_properties(mac), "paired"):
+                fallback_session = run_btctl_session(
+                    ["power on", "agent on", "agent NoInputNoOutput", "default-agent", f"pair {mac}", f"trust {mac}", f"connect {mac}"],
+                    timeout=60,
+                )
+                if fallback_session is not None:
+                    session_output = "\n".join(part for part in (session_output, fallback_session.stdout, fallback_session.stderr) if part)
+        finally:
+            if agent_cleanup is not None:
+                agent_cleanup()
         lowered_output = session_output.lower()
         if session_output and (
             "confirm passkey" in lowered_output
@@ -1635,8 +1765,12 @@ def connect_bt_device(mac, name="Unknown"):
     if paired and not bt_prop_is_yes(get_bt_device_properties(mac), "connected"):
         run_btctl("connect", mac, timeout=25)
 
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + 20
+    next_connect_retry = time.monotonic() + 5
     while paired and time.monotonic() < deadline and not is_bt_connected(mac):
+        if time.monotonic() >= next_connect_retry:
+            run_btctl("connect", mac, timeout=25)
+            next_connect_retry = time.monotonic() + 5
         time.sleep(0.5)
 
     connected = paired and is_bt_connected(mac)

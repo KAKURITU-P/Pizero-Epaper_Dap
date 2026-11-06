@@ -189,7 +189,7 @@ SSID、パスワード、国コード、チャンネルは、DAP と同じディ
 
 Bluetooth音声出力にはBlueALSAを使用します。接続完了後はBluetoothの接続状態だけでなく、対象機器のA2DP用BlueALSA PCMがALSAへ公開されたことを確認してから、`.asoundrc` とPygameの音声出力を切り替えます。
 
-Bluetooth機器の接続は手動操作です。起動時の自動接続、切断後のバックグラウンド自動再接続、PIN入力には対応していません。
+Bluetooth機器の接続は手動操作です。選択したMACアドレスの機器だけ、確認番号（パスキー）の承認を自動化します。PIN入力や未選択機器の承認、切断後のバックグラウンド自動再接続には対応していません。自動承認には `python3-dbus` と `python3-gi` が必要です。
 
 Bluetooth出力と Wi-Fi は同時に利用できます。2.4 GHz 帯の混雑時は音切れが起きる場合があるため、その場合は 5 GHz Wi-Fi を使うか、Wi-Fi を一時的に OFF にしてください。
 
@@ -207,7 +207,7 @@ aplay -L | grep -i bluealsa
 
 ```bash
 sudo apt update
-sudo apt install -y bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal
+sudo apt install -y bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal python3-dbus python3-gi
 
 
 Raspbian Trixie の標準 BlueALSA は SBC のみです。AAC 対応ビルドの導入と標準版への戻し方は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。

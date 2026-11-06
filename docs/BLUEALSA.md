@@ -1,6 +1,6 @@
 # BlueALSA 手動接続用ヘルパー
 
-`bluealsa_utils.py` は、BlueALSA A2DP出力に必要なALSA設定生成と、`aplay -L` の出力から対象Bluetooth機器を検出する処理を副作用なしで提供します。
+`bluealsa_utils.py` は、BlueALSA A2DP出力に必要なALSA設定生成と、`aplay -L` の出力から対象Bluetooth機器を検出する処理を副作用なしで提供します。DAP本体は `aplay -L` を優先し、環境により利用できない場合だけ `bluealsa-aplay -L` にフォールバックします。
 
 - MACアドレスを検証・正規化
 - `bluealsa:DEV=<MAC>,PROFILE=a2dp` 形式のPCM名を生成

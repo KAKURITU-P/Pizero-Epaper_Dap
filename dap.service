@@ -1,5 +1,6 @@
 [Unit]
 Description=Pi-DAP E-Paper Daemon
+Wants=bluetooth.service bluealsa.service
 After=multi-user.target bluetooth.service bluealsa.service
 
 [Service]
