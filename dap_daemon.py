@@ -1006,9 +1006,11 @@ def is_bluealsa_active():
         return False
 
 
-def get_bluealsa_pcm_list():
+def get_bluealsa_pcm_list(mac=None):
     """ALSAに公開されたBlueALSA PCM一覧を返す。"""
-    for command in (["aplay", "-L"], ["bluealsa-aplay", "-L"]):
+    commands = [["aplay", "-L"], ["bluealsa-aplay", "-L"]]
+    normalized_mac = mac.upper() if mac else None
+    for command in commands:
         try:
             result = subprocess.run(
                 command,
@@ -1020,7 +1022,9 @@ def get_bluealsa_pcm_list():
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        if result.returncode == 0 and result.stdout:
+        if result.returncode != 0 or not result.stdout:
+            continue
+        if normalized_mac is None or pcm_list_contains_device(result.stdout, normalized_mac):
             return result.stdout
     return ""
 
@@ -1029,7 +1033,7 @@ def wait_for_bluealsa_pcm(mac, timeout=10.0):
     """対象Bluetooth機器のA2DP PCMが公開されるまで待つ。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if pcm_list_contains_device(get_bluealsa_pcm_list(), mac):
+        if pcm_list_contains_device(get_bluealsa_pcm_list(mac), mac):
             return True
         time.sleep(0.5)
     return False
