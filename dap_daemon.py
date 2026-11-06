@@ -723,6 +723,7 @@ wifi_menu_load_generation = 0
 status_message = ""
 is_bt_scanning = False
 bt_connect_in_progress = False
+audio_transition_in_progress = False
 system_ram_usage_samples = deque(maxlen=60)
 system_resource_snapshot = None
 resource_sampled_at = 0.0
@@ -1639,6 +1640,7 @@ def start_bt_connection(mac, name="Unknown", state_lock_held=False):
 
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
+    global is_playing, audio_transition_in_progress
 
     if not is_valid_bt_mac(mac):
         print(f"BT接続を中止: 不正なデバイスアドレスです ({mac!r})")
@@ -1651,6 +1653,9 @@ def connect_bt_device(mac, name="Unknown"):
 
     previous_audio_mode = audio_output_mode
     previous_connected_mac = connected_bt_mac
+    was_playing = is_playing
+    audio_transition_in_progress = True
+    is_playing = False
 
     def restore_pwm_after_failure():
         global audio_output_mode
@@ -1692,6 +1697,9 @@ def connect_bt_device(mac, name="Unknown"):
         connected_bt_mac = previous_connected_mac
         if previous_audio_mode == "PWM":
             restore_pwm_after_failure()
+        audio_transition_in_progress = False
+        if was_playing:
+            play_current_track(full_refresh=False)
         request_display_update(is_full_refresh=True)
         return
 
@@ -1861,6 +1869,9 @@ def connect_bt_device(mac, name="Unknown"):
                     except (OSError, subprocess.SubprocessError) as error:
                         print(f"ALSA音量設定警告（再生は継続）: {error}")
                     apply_eq_settings()
+                    audio_transition_in_progress = False
+                    if was_playing:
+                        play_current_track(full_refresh=False)
                     status_message = "接続成功"
                 except Exception as error:
                     print(f"BT ALSA設定エラー ({type(error).__name__}): {error}")
@@ -1882,12 +1893,16 @@ def connect_bt_device(mac, name="Unknown"):
         if previous_audio_mode == "PWM":
             restore_pwm_after_failure()
 
+    audio_transition_in_progress = False
+    if was_playing and not is_playing:
+        play_current_track(full_refresh=False)
     request_display_update(is_full_refresh=True)
     update_menu_items()
     request_display_update(is_full_refresh=False)
 
 def set_audio_output(mode, mac=None, state_lock_held=False):
     global audio_output_mode, status_message, connected_bt_mac
+    global is_playing, audio_transition_in_progress
 
     status_message = f"切替中: {mode}"
     request_display_update(is_full_refresh=False)
@@ -1901,6 +1916,9 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
             request_display_update(is_full_refresh=False)
 
     elif mode == "PWM":
+        was_playing = is_playing
+        audio_transition_in_progress = True
+        is_playing = False
         try:
             if pygame.mixer.get_init():
                 pygame.mixer.music.stop()
@@ -1927,6 +1945,9 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
         audio_output_mode = "PWM"
         safe_init_audio()
         apply_eq_settings()
+        audio_transition_in_progress = False
+        if was_playing:
+            play_current_track(full_refresh=False)
         status_message = "PWMモード設定"
         request_display_update(is_full_refresh=True)
         update_menu_items()
@@ -3347,7 +3368,7 @@ try:
 
             if not mixer_initialized:
                 is_playing = False
-            elif not music_busy:
+            elif not music_busy and not audio_transition_in_progress:
                 handle_track_completion()
             elif total_duration_sec > 0 and cur_sec >= total_duration_sec + 1:
                 handle_track_completion()
