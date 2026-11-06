@@ -3,6 +3,7 @@
 標準の Raspbian Trixie `bluez-alsa-utils` はこの環境で SBC のみを公開します。AAC を使うには、FDK-AAC を含めて BlueALSA をビルドする必要があります。BlueALSA の AAC 対応は `--enable-aac` で有効化されます。
 
 `tools/install_bluealsa_aac.sh` は、Pi 上で FDK-AAC v2.0.3 と BlueALSA v4.3.1 をビルドし、`/opt/dap-bluealsa-aac` に隔離して導入します。既存の Raspbian パッケージは削除・上書きしません。systemd の drop-in で `bluealsa.service` の起動先を切り替えるため、DAP からのサービス操作は従来どおりです。インストール中にサービスを再起動するため、接続中のイヤホンはいったん切断されます。
+AAC版の状態保存先 `/opt/dap-bluealsa-aac/var/lib/bluealsa` もインストーラーが作成するため、起動時の `Couldn't create storage directory` を防ぎます。
 
 既存の systemd drop-in が BlueALSA の `ExecStart` を別の実行ファイルに設定している場合、インストーラーは競合を検出して中止します。AAC 版と既存設定のどちらを使うか確認してから進めてください。
 

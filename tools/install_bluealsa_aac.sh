@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Build AAC-enabled BlueALSA in an isolated prefix. The distro package remains.
 PREFIX="/opt/dap-bluealsa-aac"
+STATE_DIR="$PREFIX/var/lib/bluealsa"
 BLUEALSA_VERSION="v4.3.1"
 FDK_AAC_VERSION="v2.0.3"
 OVERRIDE="/etc/systemd/system/bluealsa.service.d/10-dap-aac.conf"
@@ -91,6 +92,7 @@ fi
 )
 
 sudo install -d -m 0755 "$(dirname "$OVERRIDE")"
+sudo install -d -o root -g root -m 0755 "$STATE_DIR"
 sudo tee "$OVERRIDE" >/dev/null <<EOF
 [Service]
 ExecStart=
