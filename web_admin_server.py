@@ -151,12 +151,27 @@ def github_update_worker():
             set_github_update("latest", "GitHubは最新です")
             return
 
+        local_changes = run_git(["status", "--porcelain", "--untracked-files=all"], timeout=15)
+        if local_changes.returncode != 0:
+            raise RuntimeError("ローカル変更を確認できません")
+        if local_changes.stdout.strip():
+            stashed = run_git([
+                "stash", "push", "--include-untracked",
+                "-m", "DAP local changes before GitHub update",
+            ])
+            if stashed.returncode != 0:
+                detail = (stashed.stderr or stashed.stdout or "ローカル変更を退避できませんでした").strip()[-180:]
+                raise RuntimeError(detail)
+
         merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
         if merged.returncode != 0:
             detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
             raise RuntimeError(detail)
 
-        set_github_update("restarting", "更新しました。本体と管理画面を再起動します")
+        message = "更新しました。本体と管理画面を再起動します"
+        if local_changes.stdout.strip():
+            message += "（ローカル変更はGitのstashに退避済み）"
+        set_github_update("restarting", message)
         dap_restart = subprocess.run(
             ["sudo", "-n", "systemctl", "restart", "dap.service"],
             capture_output=True,
