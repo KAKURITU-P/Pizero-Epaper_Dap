@@ -1532,16 +1532,16 @@ def display_worker():
 
                 draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
-                    image.paste(playback_mode_icons["shuffle"], (67, 2))
+                    image.paste(playback_mode_icons["shuffle"], (67, 4))
                 if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_one"], (90, 2))
+                    image.paste(playback_mode_icons["repeat_one"], (90, 4))
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_all"], (90, 2))
+                    image.paste(playback_mode_icons["repeat_all"], (90, 4))
                 if timer_str:
                     draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
                 output_icon = playback_mode_icons.get(output_mode.lower())
                 if output_icon:
-                    image.paste(output_icon, (152, 2))
+                    image.paste(output_icon, (152, 4))
                 draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
