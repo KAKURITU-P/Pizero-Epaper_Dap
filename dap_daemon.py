@@ -270,15 +270,15 @@ def load_playback_mode_icons():
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
         boxes = {
-            "shuffle": (12, 8, 44, 30),
-            "repeat_one": (12, 45, 44, 67),
-            "repeat_all": (12, 79, 44, 101),
+            "shuffle": (5, 10, 44, 40),
+            "repeat_one": (5, 43, 44, 73),
+            "repeat_all": (5, 77, 44, 107),
         }
         # BT/PWM are placed in the right column of the updated sprite sheet.
         if sheet.width >= 90:
             boxes.update({
-                "pwm": (57, 8, 89, 30),
-                "bt": (57, 45, 89, 67),
+                "pwm": (58, 10, 97, 40),
+                "bt": (58, 43, 97, 75),
             })
         icons = {}
         for name, box in boxes.items():
