@@ -24,7 +24,9 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         self.assertNotIn("interface", config)
         self.assertIn('device "AA:BB:CC:DD:EE:FF"', config)
         self.assertIn('profile "a2dp"', config)
-        self.assertIn('slave.pcm "equal"', config)
+        self.assertIn('type bluealsa', config)
+        self.assertNotIn('type plug', config)
+        self.assertNotIn('type equal', config)
 
     def test_pcm_candidates(self):
         candidates = bluealsa_pcm_candidates(self.MAC)

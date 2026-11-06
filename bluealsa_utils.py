@@ -43,34 +43,17 @@ def bluealsa_pcm_candidates(mac: str, interface: str = "hci0") -> tuple[str, ...
 
 
 def build_bluealsa_asoundrc(mac: str, interface: str = "hci0") -> str:
-    """Build an ALSA configuration for equalised BlueALSA A2DP playback.
+    """Build an ALSA configuration for direct BlueALSA A2DP playback.
 
     ``interface`` is retained for compatibility with callers of older releases.
     The BlueALSA ALSA PCM plugin does not accept an ``interface`` field; the
     daemon's default adapter is used instead.
     """
     normalized = normalize_mac(mac)
-    # Keep the default PCM named ``equal`` for compatibility with the existing
-    # pygame setup and EQ controls. The BlueALSA device itself is explicit.
     return f'''pcm.!default {{
-    type plug
-    slave.pcm "equal"
-}}
-
-pcm.equal {{
-    type equal
-    slave.pcm {{
-        type plug
-        slave.pcm {{
-            type bluealsa
-            device "{normalized}"
-            profile "a2dp"
-        }}
-    }}
-}}
-
-ctl.equal {{
-    type equal
+    type bluealsa
+    device "{normalized}"
+    profile "a2dp"
 }}
 '''
 
