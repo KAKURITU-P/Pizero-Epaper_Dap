@@ -27,8 +27,8 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         self.assertIn('type equal', config)
         self.assertIn('slave.pcm "dap_bt_plug"', config)
         self.assertIn('pcm.dap_bt_plug', config)
-        self.assertIn('rate 48000', config)
-        self.assertIn('format S16_LE', config)
+        self.assertNotIn('rate 48000', config)
+        self.assertNotIn('format S16_LE', config)
 
     def test_pcm_candidates(self):
         candidates = bluealsa_pcm_candidates(self.MAC)
