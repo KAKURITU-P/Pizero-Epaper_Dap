@@ -269,6 +269,7 @@ def load_playback_mode_icons():
     """Load playback mode and audio output glyphs from the sprite sheet."""
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
+        icon_size = (20, 14)
         boxes = {
             "shuffle": (5, 10, 44, 40),
             "repeat_one": (5, 43, 44, 73),
@@ -282,21 +283,40 @@ def load_playback_mode_icons():
             })
         icons = {}
         for name, box in boxes.items():
-            icon = sheet.crop(box).resize((18, 12), Image.Resampling.LANCZOS)
-            icons[name] = icon.point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+            icon = sheet.crop(box).point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+            bounds = ImageOps.invert(icon.convert("L")).getbbox()
+            if bounds:
+                icon = icon.crop(bounds)
+            scale = min(
+                icon_size[0] / max(1, icon.width),
+                icon_size[1] / max(1, icon.height),
+            )
+            resized = icon.resize(
+                (
+                    max(1, round(icon.width * scale)),
+                    max(1, round(icon.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+            centered = Image.new("1", icon_size, 1)
+            centered.paste(
+                resized,
+                ((icon_size[0] - resized.width) // 2, (icon_size[1] - resized.height) // 2),
+            )
+            icons[name] = centered
         if "pwm" not in icons or "bt" not in icons:
-            fallback = Image.new("1", (18, 12), 1)
+            fallback = Image.new("1", icon_size, 1)
             fallback_draw = ImageDraw.Draw(fallback)
             fallback_draw.line(
-                [(1, 3), (4, 3), (4, 9), (7, 9), (7, 3), (10, 3),
-                 (10, 9), (13, 9), (13, 3), (16, 3)],
+                [(1, 4), (5, 4), (5, 10), (8, 10), (8, 4), (12, 4),
+                 (12, 10), (15, 10), (15, 4), (19, 4)],
                 fill=0, width=1
             )
             icons.setdefault("pwm", fallback)
 
-            bt = Image.new("1", (18, 12), 1)
+            bt = Image.new("1", icon_size, 1)
             bt_draw = ImageDraw.Draw(bt)
-            bt_draw.line([(8, 1), (8, 11), (13, 6), (3, 1), (8, 6), (3, 11), (13, 6)], fill=0, width=1)
+            bt_draw.line([(9, 1), (9, 13), (15, 7), (3, 1), (9, 7), (3, 13), (15, 7)], fill=0, width=1)
             icons.setdefault("bt", bt)
         return icons
     except (OSError, ValueError) as error:
@@ -1512,16 +1532,16 @@ def display_worker():
 
                 draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
-                    image.paste(playback_mode_icons["shuffle"], (68, 3))
+                    image.paste(playback_mode_icons["shuffle"], (67, 1))
                 if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_one"], (91, 3))
+                    image.paste(playback_mode_icons["repeat_one"], (90, 1))
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_all"], (91, 3))
+                    image.paste(playback_mode_icons["repeat_all"], (90, 1))
                 if timer_str:
                     draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
                 output_icon = playback_mode_icons.get(output_mode.lower())
                 if output_icon:
-                    image.paste(output_icon, (154, 3))
+                    image.paste(output_icon, (152, 1))
                 draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
