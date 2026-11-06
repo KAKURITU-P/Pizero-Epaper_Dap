@@ -1716,6 +1716,38 @@ def connect_bt_device(mac, name="Unknown"):
             print(f"bluetoothctl session: {e}")
             return None
 
+    def pair_and_connect():
+        """Pair the selected device, using the MAC-scoped confirmation agent."""
+        agent_cleanup = start_bt_confirmation_agent(mac)
+        try:
+            pairing_commands = ["power on"]
+            if agent_cleanup is None:
+                pairing_commands.extend(["agent on", "agent KeyboardDisplay", "default-agent"])
+            pairing_commands.extend([f"pair {mac}", f"trust {mac}", f"connect {mac}"])
+            pairing_session = run_btctl_session(pairing_commands, timeout=60)
+            session_output = ""
+            if pairing_session is not None:
+                session_output = "\n".join(
+                    part for part in (pairing_session.stdout, pairing_session.stderr) if part
+                )
+            if agent_cleanup is None and not bt_prop_is_yes(get_bt_device_properties(mac), "paired"):
+                fallback_session = run_btctl_session(
+                    [
+                        "power on", "agent on", "agent NoInputNoOutput",
+                        "default-agent", f"pair {mac}", f"trust {mac}", f"connect {mac}",
+                    ],
+                    timeout=60,
+                )
+                if fallback_session is not None:
+                    session_output = "\n".join(
+                        part for part in (session_output, fallback_session.stdout, fallback_session.stderr)
+                        if part
+                    )
+            return session_output
+        finally:
+            if agent_cleanup is not None:
+                agent_cleanup()
+
     run_btctl("power", "on")
     run_btctl("agent", "on")
 
@@ -1723,29 +1755,7 @@ def connect_bt_device(mac, name="Unknown"):
     requires_user_confirmation = False
     if not bt_prop_is_yes(properties, "paired"):
         # 対話入力不可UIのため KeyboardDisplay を優先し、必要なら NoInputNoOutput にフォールバック。
-        agent_cleanup = start_bt_confirmation_agent(mac)
-        try:
-            pairing_commands = ["power on"]
-            if agent_cleanup is None:
-                pairing_commands.extend(["agent on", "agent KeyboardDisplay", "default-agent"])
-            pairing_commands.extend([f"pair {mac}", f"trust {mac}", f"connect {mac}"])
-            pairing_session = run_btctl_session(
-                pairing_commands,
-                timeout=60,
-            )
-            session_output = ""
-            if pairing_session is not None:
-                session_output = "\n".join(part for part in (pairing_session.stdout, pairing_session.stderr) if part)
-            if agent_cleanup is None and not bt_prop_is_yes(get_bt_device_properties(mac), "paired"):
-                fallback_session = run_btctl_session(
-                    ["power on", "agent on", "agent NoInputNoOutput", "default-agent", f"pair {mac}", f"trust {mac}", f"connect {mac}"],
-                    timeout=60,
-                )
-                if fallback_session is not None:
-                    session_output = "\n".join(part for part in (session_output, fallback_session.stdout, fallback_session.stderr) if part)
-        finally:
-            if agent_cleanup is not None:
-                agent_cleanup()
+        session_output = pair_and_connect()
         lowered_output = session_output.lower()
         if session_output and (
             "confirm passkey" in lowered_output
@@ -1762,8 +1772,23 @@ def connect_bt_device(mac, name="Unknown"):
     if paired and not bt_prop_is_yes(properties, "trusted"):
         run_btctl("trust", mac)
 
+    connect_result = None
     if paired and not bt_prop_is_yes(get_bt_device_properties(mac), "connected"):
-        run_btctl("connect", mac, timeout=25)
+        connect_result = run_btctl("connect", mac, timeout=25)
+        connect_output = ""
+        if connect_result is not None:
+            connect_output = "\n".join(
+                part for part in (connect_result.stdout, connect_result.stderr) if part
+            ).lower()
+        if "br-connection-key-missing" in connect_output:
+            print(f"Bluetooth鍵不一致を検出、再ペアリングします: {mac}")
+            status_message = "鍵を再生成中..."
+            request_display_update(is_full_refresh=False)
+            run_btctl("remove", mac, timeout=15)
+            time.sleep(0.5)
+            session_output = pair_and_connect()
+            properties = get_bt_device_properties(mac)
+            paired = bt_prop_is_yes(properties, "paired")
 
     deadline = time.monotonic() + 20
     next_connect_retry = time.monotonic() + 5
