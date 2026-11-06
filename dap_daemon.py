@@ -283,8 +283,27 @@ def load_playback_mode_icons():
             })
         icons = {}
         for name, box in boxes.items():
-            icon = sheet.crop(box).resize(icon_size, Image.Resampling.LANCZOS)
-            icons[name] = icon.point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+            icon = sheet.crop(box).point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+            bounds = ImageOps.invert(icon.convert("L")).getbbox()
+            if bounds:
+                icon = icon.crop(bounds)
+            scale = min(
+                icon_size[0] / max(1, icon.width),
+                icon_size[1] / max(1, icon.height),
+            )
+            resized = icon.resize(
+                (
+                    max(1, round(icon.width * scale)),
+                    max(1, round(icon.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+            centered = Image.new("1", icon_size, 1)
+            centered.paste(
+                resized,
+                ((icon_size[0] - resized.width) // 2, (icon_size[1] - resized.height) // 2),
+            )
+            icons[name] = centered
         if "pwm" not in icons or "bt" not in icons:
             fallback = Image.new("1", icon_size, 1)
             fallback_draw = ImageDraw.Draw(fallback)
