@@ -26,6 +26,10 @@ GITHUB_REPOSITORY = "KAKURITU-P/Pizero-Epaper_Dap"
 GITHUB_RELEASES_URL = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 )
+GITHUB_IMAGE_URL_PATTERN = re.compile(
+    r"https://github\.com/user-attachments/assets/"
+    r"[0-9a-fA-F-]+"
+)
 WIFI_JOB = {"state": "idle", "ssid": "", "message": ""}
 WIFI_JOB_LOCK = threading.Lock()
 FAVORITES_LOCK = threading.Lock()
@@ -61,6 +65,12 @@ def get_latest_release_image_url():
     assets = release.get("assets", [])
     if not isinstance(assets, list):
         raise RuntimeError("最新リリースの添付ファイル情報が不正です")
+
+    body = release.get("body", "")
+    if isinstance(body, str):
+        body_image = GITHUB_IMAGE_URL_PATTERN.search(body)
+        if body_image:
+            return body_image.group(0)
 
     image_extensions = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
     for asset in assets:
