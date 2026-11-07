@@ -291,9 +291,6 @@ def load_playback_mode_icons():
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box).point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
-            bounds = ImageOps.invert(icon.convert("L")).getbbox()
-            if bounds:
-                icon = icon.crop(bounds)
             icon_size = {
                 "shuffle": (17, 11),
                 "repeat_all": (17, 11),
@@ -304,23 +301,9 @@ def load_playback_mode_icons():
                 "aac": (8, 11),
                 "other": (8, 11),
             }[name]
-            scale = min(
-                icon_size[0] / max(1, icon.width),
-                icon_size[1] / max(1, icon.height),
-            )
-            resized = icon.resize(
-                (
-                    max(1, round(icon.width * scale)),
-                    max(1, round(icon.height * scale)),
-                ),
-                Image.Resampling.LANCZOS,
-            )
-            centered = Image.new("1", icon_size, 1)
-            centered.paste(
-                resized,
-                ((icon_size[0] - resized.width) // 2, (icon_size[1] - resized.height) // 2),
-            )
-            icons[name] = centered
+            if icon.size != icon_size:
+                raise ValueError(f"{name} crop has unexpected size: {icon.size}")
+            icons[name] = icon
 
         for codec in ("aac", "sbc", "other"):
             if "bt" in icons and codec in icons:
