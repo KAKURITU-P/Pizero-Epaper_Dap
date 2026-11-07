@@ -1549,7 +1549,7 @@ def display_worker():
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (145, 4))
+                    image.paste(output_icon, (158, 4))
                 draw.text((186, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
