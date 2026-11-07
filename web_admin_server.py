@@ -14,12 +14,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 BASE_DIR = Path(__file__).resolve().parent
 AP_CONFIG = BASE_DIR / "ap_config.json"
 PAGE_FILE = BASE_DIR / "web_admin" / "index.html"
 PHOTO_FILE = BASE_DIR / "ships.png"
 WEB_PHOTO_FILE = BASE_DIR / "web.png"
+GITHUB_REPOSITORY = "KAKURITU-P/Pizero-Epaper_Dap"
+GITHUB_RELEASES_URL = (
+    f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+)
 WIFI_JOB = {"state": "idle", "ssid": "", "message": ""}
 WIFI_JOB_LOCK = threading.Lock()
 FAVORITES_LOCK = threading.Lock()
@@ -36,6 +42,39 @@ GITHUB_UPDATE = {
     "latest": {},
 }
 GITHUB_UPDATE_LOCK = threading.Lock()
+
+
+def get_latest_release_image_url():
+    request = Request(
+        GITHUB_RELEASES_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Pizero-Epaper_Dap-web-admin",
+        },
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            release = json.load(response)
+    except (HTTPError, URLError, OSError, ValueError) as error:
+        raise RuntimeError(f"最新リリース画像の取得に失敗しました: {error}") from error
+
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise RuntimeError("最新リリースの添付ファイル情報が不正です")
+
+    image_extensions = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = asset.get("name")
+        download_url = asset.get("browser_download_url")
+        if (
+            isinstance(name, str)
+            and Path(name).suffix.lower() in image_extensions
+            and isinstance(download_url, str)
+        ):
+            return download_url
+    raise RuntimeError("最新リリースに画像の添付ファイルがありません")
 
 
 def run(command, timeout=8):
@@ -562,6 +601,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/api/latest-release-image":
+                image_url = get_latest_release_image_url()
+                self.send_response(302)
+                self.send_header("Location", image_url)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
             elif path == "/api/status":
                 self.send_json(get_status())
             elif path == "/api/ap":
