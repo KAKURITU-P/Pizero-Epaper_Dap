@@ -269,24 +269,41 @@ def load_playback_mode_icons():
     """Load playback mode and audio output glyphs from the sprite sheet."""
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
-        icon_size = (20, 12)
-        boxes = {
-            "shuffle": (5, 10, 44, 40),
-            "repeat_one": (5, 43, 44, 73),
-            "repeat_all": (5, 77, 44, 107),
-        }
-        # BT/PWM are placed in the right column of the updated sprite sheet.
-        if sheet.width >= 90:
-            boxes.update({
-                "pwm": (58, 10, 97, 40),
-                "bt": (58, 43, 97, 75),
-            })
+        boxes = {}
+        if sheet.width < 37 or sheet.height < 36:
+            raise ValueError(f"sprite sheet is too small: {sheet.size}")
+
+        # The left column contains playback modes.  The right column has PWM
+        # on the first row, then a 2x2 BT/codec sprite:
+        # BT | SBC
+        # AAC | other
+        boxes.update({
+            "shuffle": (1, 1, 18, 12),
+            "repeat_all": (1, 13, 18, 24),
+            "repeat_one": (1, 25, 18, 36),
+            "pwm": (19, 1, 36, 12),
+            "bt": (19, 13, 28, 24),
+            "sbc": (28, 13, 36, 24),
+            "aac": (19, 25, 28, 36),
+            "other": (28, 25, 36, 36),
+        })
+
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box).point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
             bounds = ImageOps.invert(icon.convert("L")).getbbox()
             if bounds:
                 icon = icon.crop(bounds)
+            icon_size = {
+                "shuffle": (17, 11),
+                "repeat_all": (17, 11),
+                "repeat_one": (17, 11),
+                "pwm": (17, 11),
+                "bt": (9, 11),
+                "sbc": (8, 11),
+                "aac": (8, 11),
+                "other": (8, 11),
+            }[name]
             scale = min(
                 icon_size[0] / max(1, icon.width),
                 icon_size[1] / max(1, icon.height),
@@ -304,8 +321,15 @@ def load_playback_mode_icons():
                 ((icon_size[0] - resized.width) // 2, (icon_size[1] - resized.height) // 2),
             )
             icons[name] = centered
-        if "pwm" not in icons or "bt" not in icons:
-            fallback = Image.new("1", icon_size, 1)
+
+        for codec in ("aac", "sbc", "other"):
+            if "bt" in icons and codec in icons:
+                combined = Image.new("1", (17, 11), 1)
+                combined.paste(icons["bt"], (0, 0))
+                combined.paste(icons[codec], (9, 0))
+                icons[codec] = combined
+        if "pwm" not in icons:
+            fallback = Image.new("1", (17, 11), 1)
             fallback_draw = ImageDraw.Draw(fallback)
             fallback_draw.line(
                 [(1, 4), (5, 4), (5, 10), (8, 10), (8, 4), (12, 4),
@@ -314,10 +338,6 @@ def load_playback_mode_icons():
             )
             icons.setdefault("pwm", fallback)
 
-            bt = Image.new("1", icon_size, 1)
-            bt_draw = ImageDraw.Draw(bt)
-            bt_draw.line([(9, 1), (9, 13), (15, 7), (3, 1), (9, 7), (3, 13), (15, 7)], fill=0, width=1)
-            icons.setdefault("bt", bt)
         return icons
     except (OSError, ValueError) as error:
         print(f"再生モードアイコンを読み込めません: {error}")
@@ -1539,10 +1559,15 @@ def display_worker():
                     image.paste(playback_mode_icons["repeat_all"], (90, 4))
                 if timer_str:
                     draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
-                output_icon = playback_mode_icons.get(output_mode.lower())
+                if output_mode == "PWM":
+                    output_icon_name = "pwm"
+                else:
+                    codec = get_bt_codec_info().lower()
+                    output_icon_name = codec if codec in {"aac", "sbc"} else "other"
+                output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (152, 4))
-                draw.text((176, 2), vol_str, font=font_main, fill=0)
+                    image.paste(output_icon, (145, 4))
+                draw.text((186, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
