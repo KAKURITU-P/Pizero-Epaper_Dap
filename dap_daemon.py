@@ -268,7 +268,7 @@ font_clock  = get_font(30)
 def load_playback_mode_icons():
     """Load playback mode and audio output glyphs from the sprite sheet."""
     try:
-        sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("L")
+        sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("1")
         boxes = {}
         if sheet.width < 37 or sheet.height < 36:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
@@ -290,7 +290,7 @@ def load_playback_mode_icons():
 
         icons = {}
         for name, box in boxes.items():
-            icon = sheet.crop(box).point(lambda pixel: 255 if pixel >= 150 else 0).convert("1")
+            icon = sheet.crop(box)
             icon_size = {
                 "shuffle": (17, 11),
                 "repeat_all": (17, 11),
@@ -302,7 +302,7 @@ def load_playback_mode_icons():
                 "other": (8, 11),
             }[name]
             if icon.size != icon_size:
-                raise ValueError(f"{name} crop has unexpected size: {icon.size}")
+                icon = icon.resize(icon_size, Image.Resampling.NEAREST)
             icons[name] = icon
 
         for codec in ("aac", "sbc", "other"):
