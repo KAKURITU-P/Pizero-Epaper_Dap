@@ -277,43 +277,42 @@ def load_playback_mode_icons():
         if sheet.width < 55 or sheet.height < 35:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
-        boxes.update({
-            "shuffle":    (1,  1,  18, 12),
-            "repeat_all": (1,  14, 18, 25),
-            "repeat_one": (1,  27, 18, 38),
-            "pwm":        (20, 1,  37, 12),
-            "bt":         (20, 14, 29, 25),
-            "sbc":        (29, 14, 37, 25),
-            "aac":        (20, 27, 28, 38),
-            "dis":        (29, 27, 37, 38),
-            "usb":        (39, 1,  56, 12),
+                boxes.update({
+            "shuffle": (1, 1, 18, 12),
+            "repeat_all": (1, 13, 18, 24),
+            "repeat_one": (1, 25, 18, 36),
+            "pwm": (19, 1, 36, 12),
+            "bt": (19, 13, 28, 24),
+            "sbc": (28, 13, 36, 24),
+            "aac": (19, 25, 28, 36),
+            "other": (28, 25, 36, 36),
+            "usb": (37, 1, 54, 12),
         })
 
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box)
             icon_size = {
-                "shuffle":    (17, 11),
+                "shuffle": (17, 11),
                 "repeat_all": (17, 11),
                 "repeat_one": (17, 11),
-                "pwm":        (17, 11),
-                "bt":         (9,  11),
-                "sbc":        (8,  11),
-                "aac":        (8,  11),
-                "dis":        (8,  11),
-                "usb":        (17, 11),
+                "pwm": (17, 11),
+                "bt": (9, 11),
+                "sbc": (8, 11),
+                "aac": (8, 11),
+                "other": (8, 11),
+                "usb": (17, 11),
             }[name]
             if icon.size != icon_size:
                 icon = icon.resize(icon_size, Image.Resampling.NEAREST)
             icons[name] = icon
 
-        for codec_name in ["sbc", "aac", "dis"]:
-            if "bt" in icons and codec_name in icons:
+        for codec in ("aac", "sbc", "other"):
+            if "bt" in icons and codec in icons:
                 combined = Image.new("1", (17, 11), 1)
                 combined.paste(icons["bt"], (0, 0))
-                combined.paste(icons[codec_name], (9, 0))
-                icons[f"bt_{codec_name}"] = combined
-
+                combined.paste(icons[codec], (9, 0))
+                icons[codec] = combined
         if "pwm" not in icons:
             fallback = Image.new("1", (17, 11), 1)
             fallback_draw = ImageDraw.Draw(fallback)
@@ -1550,12 +1549,12 @@ def display_worker():
                 elif output_mode == "PWM":
                     output_icon_name = "pwm"
                 else:
-                    output_icon_name = "bt"
+                    codec = get_bt_codec_info().lower()
+                    output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (153, 3))
-                draw.text((176, 2), vol_str, font=font_main, fill=0)
-                draw.line([(0, 18), (250, 18)], fill=0)
+                     image.paste(output_icon, (158, 4))
+                draw.text((186, 2), vol_str, font=font_main, fill=0)
 
                 if pl and track_idx < len(pl):
                     full_path = pl[track_idx]
