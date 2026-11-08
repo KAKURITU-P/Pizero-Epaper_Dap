@@ -174,6 +174,18 @@ def choose_usb_sample_rate(
     return default
 
 
+_BT_ACL_LINK_RE = re.compile(r"^hci\d+:\d+$")
+
+
+def has_bluetooth_acl_link(entries: Iterable[str]) -> bool:
+    """True if ``/sys/class/bluetooth`` lists a live connection (e.g. ``hci0:11``).
+
+    The kernel adds one ``hciN:<handle>`` entry per connected device, so this is a
+    cheap check that needs no subprocess.
+    """
+    return any(_BT_ACL_LINK_RE.match(name) for name in entries)
+
+
 def pcm_list_contains_device(alsa_pcm_list: str, mac: str) -> bool:
     """Return whether BlueALSA output advertises the Bluetooth device."""
     normalized = normalize_mac(mac)

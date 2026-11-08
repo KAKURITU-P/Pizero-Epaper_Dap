@@ -8,6 +8,7 @@ from bluealsa_utils import (
     build_usb_otg_asoundrc,
     choose_usb_sample_rate,
     find_usb_audio_device,
+    has_bluetooth_acl_link,
     normalize_mac,
     pcm_list_contains_any,
     pcm_list_contains_device,
@@ -92,6 +93,12 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         text = "Capture:\n    Rates: 44100\n"
         self.assertEqual(choose_usb_sample_rate(text, default=48000), 48000)
         self.assertEqual(choose_usb_sample_rate("", default=44100), 44100)
+
+    def test_bluetooth_acl_link_detection(self):
+        self.assertTrue(has_bluetooth_acl_link(["hci0", "hci0:11"]))
+        self.assertFalse(has_bluetooth_acl_link(["hci0"]))
+        self.assertFalse(has_bluetooth_acl_link([]))
+        self.assertFalse(has_bluetooth_acl_link(["hci0:abc", "rfkill1"]))
 
     def test_pcm_list_detection(self):
         output = """null\n    Discard all samples\nbluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp\n    BT audio\n"""
