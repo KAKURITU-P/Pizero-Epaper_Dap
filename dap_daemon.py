@@ -274,36 +274,49 @@ def load_playback_mode_icons():
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("1")
         boxes = {}
-        if sheet.width < 55 or sheet.height < 25:
+        if sheet.width < 55 or sheet.height < 35:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
-        # The updated sheet is a 3x2 grid:
-        # shuffle | repeat-all | repeat-one
-        # USB OTG | PWM | Bluetooth
+        # 端の余白や列間の1px隙間ルールに合わせた正確な切り出し座標 (left, upper, right, lower)
         boxes.update({
-            "shuffle": (1, 1, 18, 12),
-            "repeat_all": (20, 1, 37, 12),
-            "repeat_one": (38, 1, 55, 12),
-            "usb": (1, 13, 18, 25),
-            "pwm": (20, 13, 37, 25),
-            "bt": (38, 13, 55, 25),
+            # 左列 (幅17px / 高さ11px)
+            "shuffle":    (1,  1,  18, 12),  # 上段
+            "repeat_all": (1,  14, 18, 25),  # 中段
+            "repeat_one": (1,  27, 18, 38),  # 下段
+            
+            # 中央列 (幅17px / 高さ11px)
+            "pwm":        (20, 1,  37, 12),  # 上段 (幅17px)
+            "bt":         (20, 14, 29, 25),  # 中段左 (幅9px)
+            "sbc":        (29, 14, 37, 25),  # 中段右 (幅8px / btと隙間なし)
+            "aac":        (20, 27, 28, 38),  # 下段左 (幅8px)
+            "dis":        (29, 27, 37, 38),  # 下段右 (幅8px)
+            
+            # 右列 (幅17px / 高さ11px)
+            "usb":        (39, 1,  56, 12),  # 上段 (幅17px)
         })
 
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box)
+            
+            # 各アイコンの本来のサイズ定義
             icon_size = {
-                "shuffle": (17, 11),
+                "shuffle":    (17, 11),
                 "repeat_all": (17, 11),
                 "repeat_one": (17, 11),
-                "usb": (17, 12),
-                "pwm": (17, 12),
-                "bt": (17, 12),
+                "pwm":        (17, 11),
+                "bt":         (9,  11),
+                "sbc":        (8,  11),
+                "aac":        (8,  11),
+                "dis":        (8,  11),
+                "usb":        (17, 11),
             }[name]
+            
             if icon.size != icon_size:
                 icon = icon.resize(icon_size, Image.Resampling.NEAREST)
             icons[name] = icon
 
+        # フォールバック処理 (PWM)
         if "pwm" not in icons:
             fallback = Image.new("1", (17, 11), 1)
             fallback_draw = ImageDraw.Draw(fallback)
