@@ -90,6 +90,26 @@ ctl.equal {
 '''
 
 
+def build_usb_otg_asoundrc(device: str = "plughw:1,0") -> str:
+    """Build the equalizer route for the USB OTG audio device."""
+    if not device or any(char in device for char in '\n\r"'):
+        raise ValueError("invalid USB OTG ALSA device")
+    return f'''pcm.!default {{
+    type plug
+    slave.pcm "equal"
+}}
+
+pcm.equal {{
+    type equal
+    slave.pcm "{device}"
+}}
+
+ctl.equal {{
+    type equal
+}}
+'''
+
+
 def pcm_list_contains_device(alsa_pcm_list: str, mac: str) -> bool:
     """Return whether BlueALSA output advertises the Bluetooth device."""
     normalized = normalize_mac(mac)

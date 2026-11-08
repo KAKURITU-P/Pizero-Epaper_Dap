@@ -37,7 +37,9 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 | **OS** | Raspberry Pi OS (Trixie) |
 | **ディスプレイ** | Waveshare 2.13inch e-Paper HAT (V4) (250×122 resolution) |
 | **ボタン** | タクトスイッチ × 6 (GPIO 接続) |
-| **オーディオ出力** | ALSA アナログ出力 / Bluetooth A2DP オーディオ |
+| **オーディオ出力** | ALSA アナログ出力 / USB OTG AUDIO / Bluetooth A2DP オーディオ |
+
+「接続設定」→「Bluetooth設定」→「出力先」で `PWM` → `USBOTG` → `BT` の順に切り替えます。USB OTG AUDIO は既定で ALSA の `plughw:1,0` を使用し、カード番号が異なる場合は `DAP_USB_OTG_ALSA_DEVICE` 環境変数で変更できます。
 
 ### GPIO ピン割り当て
 

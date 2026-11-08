@@ -5,6 +5,7 @@ from bluealsa_utils import (
     bluealsa_pcm_name,
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
+    build_usb_otg_asoundrc,
     normalize_mac,
     pcm_list_contains_any,
     pcm_list_contains_device,
@@ -41,6 +42,15 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         self.assertIn("type equal", config)
         self.assertNotIn("rate 48000", config)
         self.assertNotIn("dap_pwm", config)
+
+    def test_build_usb_otg_asoundrc_uses_usb_hardware(self):
+        config = build_usb_otg_asoundrc()
+        self.assertIn('slave.pcm "plughw:1,0"', config)
+        self.assertIn("type equal", config)
+
+    def test_build_usb_otg_asoundrc_rejects_multiline_device(self):
+        with self.assertRaises(ValueError):
+            build_usb_otg_asoundrc('plughw:1,0"\n')
 
     def test_pcm_list_detection(self):
         output = """null\n    Discard all samples\nbluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp\n    BT audio\n"""
