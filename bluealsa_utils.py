@@ -110,6 +110,27 @@ ctl.equal {{
 '''
 
 
+_ALSA_CARD_RE = re.compile(r"^\s*(\d+)\s+\[([^\]]+?)\s*\]:\s*(\S+)")
+_ALSA_CARD_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def find_usb_audio_device(proc_asound_cards: str) -> str | None:
+    """Return a stable ALSA device name for the first USB audio card.
+
+    ``proc_asound_cards`` is the text of ``/proc/asound/cards``.  The card
+    *id* (for example ``Device``) is used instead of the card number because
+    the number changes when other cards, such as HDMI audio, are present.
+    """
+    for line in (proc_asound_cards or "").splitlines():
+        match = _ALSA_CARD_RE.match(line)
+        if not match:
+            continue
+        _number, card_id, driver = match.groups()
+        if "usb" in driver.lower() and _ALSA_CARD_ID_RE.fullmatch(card_id):
+            return f"plughw:CARD={card_id},DEV=0"
+    return None
+
+
 def pcm_list_contains_device(alsa_pcm_list: str, mac: str) -> bool:
     """Return whether BlueALSA output advertises the Bluetooth device."""
     normalized = normalize_mac(mac)

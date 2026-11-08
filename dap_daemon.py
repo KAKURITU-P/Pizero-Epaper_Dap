@@ -32,6 +32,7 @@ from bluealsa_utils import (
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
     build_usb_otg_asoundrc,
+    find_usb_audio_device,
     pcm_list_contains_device,
 )
 from network_parse_utils import (
@@ -114,13 +115,35 @@ connected_bt_mac = "25:02:27:B5:81:BE"
 
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
-USB_OTG_ALSA_DEVICE = os.environ.get("DAP_USB_OTG_ALSA_DEVICE", "plughw:1,0")
+USB_OTG_ALSA_DEVICE_ENV = os.environ.get("DAP_USB_OTG_ALSA_DEVICE")
+
+def resolve_usb_otg_device():
+    """USB音声デバイスを返す。環境変数 > /proc/asound/cards の自動検出 > plughw:1,0。"""
+    if USB_OTG_ALSA_DEVICE_ENV:
+        return USB_OTG_ALSA_DEVICE_ENV
+    try:
+        with open("/proc/asound/cards", "r", encoding="utf-8", errors="replace") as cards_file:
+            detected = find_usb_audio_device(cards_file.read())
+    except OSError:
+        detected = None
+    return detected or "plughw:1,0"
+
+USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
+
+def asoundrc_uses_usb_otg(content):
+    """~/.asoundrc が USB OTG 出力向けか判定する(カード番号が変わっても追従)。"""
+    return (
+        USB_OTG_ALSA_DEVICE in content
+        or "plughw:CARD=" in content
+        or (USB_OTG_ALSA_DEVICE_ENV is not None and USB_OTG_ALSA_DEVICE_ENV in content)
+    )
+
 if os.path.exists(asoundrc_path):
     with open(asoundrc_path, "r") as f:
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
-    elif USB_OTG_ALSA_DEVICE in content:
+    elif asoundrc_uses_usb_otg(content):
         audio_output_mode = "USBOTG"
     else:
         audio_output_mode = "PWM"
@@ -188,11 +211,29 @@ def safe_init_audio():
         pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=16384)
         set_cur_volume(volume)
         print(f"Audio initialized in [{audio_output_mode}] mode.")
+        return True
     except Exception as e:
-        print(f"Audio init failed ({e}).")
+        print(f"Audio init failed in [{audio_output_mode}] mode ({e}).")
+        return False
 
 
-safe_init_audio()
+if audio_output_mode == "USBOTG":
+    # 前回のカード番号/IDが古い可能性があるため、現在のUSB音声デバイスで設定し直す。
+    try:
+        with open(asoundrc_path, "w", encoding="utf-8") as file:
+            file.write(build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE))
+    except Exception as error:
+        print(f"USB OTG ALSA設定更新失敗: {error}")
+
+if not safe_init_audio() and audio_output_mode == "USBOTG":
+    print(f"USB OTG audio init failed (device={USB_OTG_ALSA_DEVICE}); falling back to PWM.")
+    audio_output_mode = "PWM"
+    try:
+        with open(asoundrc_path, "w", encoding="utf-8") as file:
+            file.write(build_pwm_asoundrc())
+    except Exception as error:
+        print(f"PWM ALSA設定更新失敗: {error}")
+    safe_init_audio()
 
 # --- 2. e-Paper 初期化 ---
 epd = epd2in13.EPD()
@@ -1964,7 +2005,7 @@ def connect_bt_device(mac, name="Unknown"):
 
 def set_audio_output(mode, mac=None, state_lock_held=False):
     global audio_output_mode, status_message, connected_bt_mac
-    global is_playing, audio_transition_in_progress
+    global is_playing, audio_transition_in_progress, USB_OTG_ALSA_DEVICE
 
     status_message = f"切替中: {mode}"
     request_display_update(is_full_refresh=False)
@@ -1998,6 +2039,10 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
         subprocess.run(["sudo", "systemctl", "stop", "bluealsa"], check=False)
         time.sleep(0.5)
 
+        if mode == "USBOTG":
+            # 差し替え・番号変更に追従するため、切替のたびに再検出する。
+            USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
+
         try:
             with open(asoundrc_path, "w", encoding="utf-8") as file:
                 config = (
@@ -2010,12 +2055,37 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
             print(f"asoundrc write error: {e}")
 
         audio_output_mode = mode
-        safe_init_audio()
+        audio_ok = safe_init_audio()
+        if not audio_ok and mode == "USBOTG":
+            # USB機器の認識待ちの可能性があるため、数回だけ再試行する。
+            for _ in range(3):
+                time.sleep(1.0)
+                USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
+                try:
+                    with open(asoundrc_path, "w", encoding="utf-8") as file:
+                        file.write(build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE))
+                except Exception as e:
+                    print(f"asoundrc write error: {e}")
+                audio_ok = safe_init_audio()
+                if audio_ok:
+                    break
+
+        if not audio_ok and mode == "USBOTG":
+            print(f"USB OTG audio init failed (device={USB_OTG_ALSA_DEVICE}); falling back to PWM.")
+            try:
+                with open(asoundrc_path, "w", encoding="utf-8") as file:
+                    file.write(build_pwm_asoundrc())
+            except Exception as e:
+                print(f"asoundrc write error: {e}")
+            audio_output_mode = "PWM"
+            safe_init_audio()
+            status_message = "USB音声初期化失敗"
+        else:
+            status_message = f"{mode}モード設定"
         apply_eq_settings()
         audio_transition_in_progress = False
         if was_playing:
             play_current_track(full_refresh=False)
-        status_message = f"{mode}モード設定"
         request_display_update(is_full_refresh=True)
         update_menu_items()
         request_display_update(is_full_refresh=False)
