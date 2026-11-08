@@ -277,27 +277,21 @@ def load_playback_mode_icons():
         if sheet.width < 55 or sheet.height < 35:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
-        # 端の余白や列間の1px隙間ルールに合わせた正確な切り出し座標 (left, upper, right, lower)
         boxes.update({
-            # 左列 (幅17px / 高さ11px)
-            "shuffle":    (1,  1,  18, 12),  # シャッフル
-            "repeat_all": (1,  14, 18, 25),  # リピート全曲
-            "repeat_one": (1,  27, 18, 38),  # リピート1曲
-            
-            # 中央列・右側の各アイコン
-            "pwm":        (20, 1,  37, 12),  # PWM (幅17px)
-            "bt":         (20, 14, 29, 25),  # BT (幅9px)
-            "sbc":        (29, 14, 37, 25),  # SBC (幅8px / BTと隙間なし)
-            "aac":        (20, 27, 28, 38),  # AAC (幅8px)
-            "dis":        (29, 27, 37, 38),  # DIS (幅8px)
-            "usb":        (39, 1,  56, 12),  # USB (幅17px)
+            "shuffle":    (1,  1,  18, 12),
+            "repeat_all": (1,  14, 18, 25),
+            "repeat_one": (1,  27, 18, 38),
+            "pwm":        (20, 1,  37, 12),
+            "bt":         (20, 14, 29, 25),
+            "sbc":        (29, 14, 37, 25),
+            "aac":        (20, 27, 28, 38),
+            "dis":        (29, 27, 37, 38),
+            "usb":        (39, 1,  56, 12),
         })
 
         icons = {}
         for name, box in boxes.items():
             icon = sheet.crop(box)
-            
-            # 各アイコンの本来のサイズ定義
             icon_size = {
                 "shuffle":    (17, 11),
                 "repeat_all": (17, 11),
@@ -309,12 +303,17 @@ def load_playback_mode_icons():
                 "dis":        (8,  11),
                 "usb":        (17, 11),
             }[name]
-            
             if icon.size != icon_size:
                 icon = icon.resize(icon_size, Image.Resampling.NEAREST)
             icons[name] = icon
 
-        # フォールバック処理 (PWM)
+        for codec_name in ["sbc", "aac", "dis"]:
+            if "bt" in icons and codec_name in icons:
+                combined = Image.new("1", (17, 11), 1)
+                combined.paste(icons["bt"], (0, 0))
+                combined.paste(icons[codec_name], (9, 0))
+                icons[f"bt_{codec_name}"] = combined
+
         if "pwm" not in icons:
             fallback = Image.new("1", (17, 11), 1)
             fallback_draw = ImageDraw.Draw(fallback)
