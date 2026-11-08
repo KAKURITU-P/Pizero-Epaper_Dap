@@ -1,5 +1,11 @@
 import smbus2
 import sys
+
+try:  # systemd/journaldのパイプでもprintを即時に出力する
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 import os
 import time
 import glob
@@ -3093,30 +3099,35 @@ def bt_link_present():
 
 def attempt_bt_reconnect(mac):
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["bluetoothctl", "connect", mac],
             capture_output=True, text=True, errors="ignore", timeout=9, check=False,
         )
+        lines = [line for line in (result.stdout + result.stderr).splitlines() if line.strip()]
+        print(f"BT再接続試行 {mac}: rc={result.returncode} {lines[-1] if lines else ''}")
     except (OSError, subprocess.SubprocessError) as error:
-        print(f"bluetoothctl connect: {error}")
+        print(f"BT再接続試行 {mac}: {error}")
 
 def recover_bt_audio(mac):
     global audio_output_lost, status_message, audio_transition_in_progress
     audio_transition_in_progress = True
     try:
+        print(f"BT音声の復帰を開始: {mac}")
         if not is_bluealsa_active():
+            print("BlueALSAが停止中のため起動します")
             subprocess.run(["sudo", "systemctl", "start", "bluealsa"], check=False, timeout=10)
-        if not wait_for_bluealsa_pcm(mac, timeout=10.0):
-            status_message = "音声デバイス未検出"
-            request_display_update(is_full_refresh=False)
-            return False
+        pcm_listed = wait_for_bluealsa_pcm(mac, timeout=6.0)
+        if not pcm_listed:
+            # aplay -L に出なくても、bluealsa PCMは機器指定で直接開けることがある。
+            print("BlueALSA PCMが一覧に見えません。そのまま開けるか試します")
         try:
             write_text_atomically(asoundrc_path, build_bluealsa_asoundrc(mac))
         except Exception as error:
             print(f"BT ALSA設定更新失敗: {error}")
             return False
         if not safe_init_audio():
-            status_message = "BT音声初期化失敗"
+            status_message = "BT音声初期化失敗" if pcm_listed else "音声デバイス未検出"
+            print(f"BT音声を開けませんでした (PCM一覧: {'あり' if pcm_listed else 'なし'})")
             request_display_update(is_full_refresh=False)
             return False
         apply_eq_settings()
@@ -3223,6 +3234,8 @@ def audio_output_watchdog_thread():
                         next_bt_attempt = time.monotonic() + 1.0
                         link_back = is_bt_connected(mac)
                     if link_back:
+                        if next_bt_recover == 0.0 or time.monotonic() >= next_bt_recover:
+                            print(f"BT機器の接続を検出: {mac}")
                         if (
                             audio_output_mode == "BT"
                             and connected_bt_mac == mac
@@ -3236,6 +3249,7 @@ def audio_output_watchdog_thread():
                                 next_bt_recover = time.monotonic() + 5.0
                     elif time.monotonic() >= bt_window_end and not bt_gave_up:
                         bt_gave_up = True
+                        print(f"BT再接続を{BT_RECONNECT_WINDOW_SEC:.0f}秒試しましたが接続できません。接続され次第、自動で復帰します。")
                         status_message = "BT再接続失敗"
                         request_display_update(is_full_refresh=False)
             else:
