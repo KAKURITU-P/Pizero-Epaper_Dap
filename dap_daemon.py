@@ -274,9 +274,14 @@ def load_playback_mode_icons():
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("1")
         boxes = {}
-        if sheet.width < 55 or sheet.height < 35:
+        if sheet.width < 55 or sheet.height < 36:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
+        # The left column contains playback modes.  The middle column has PWM
+        # on the first row, then a 2x2 BT/codec sprite:
+        # BT | SBC
+        # AAC | other
+        # The right column has the USB OTG output icon.
         boxes.update({
             "shuffle": (1, 1, 18, 12),
             "repeat_all": (1, 13, 18, 24),
@@ -1553,8 +1558,9 @@ def display_worker():
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                     image.paste(output_icon, (158, 4))
-                draw.text((186, 2), vol_str, font=font_main, fill=0)
+                    image.paste(output_icon, (153, 4))
+                draw.text((176, 2), vol_str, font=font_main, fill=0)
+                draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
                     full_path = pl[track_idx]
