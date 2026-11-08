@@ -6,6 +6,7 @@ from bluealsa_utils import (
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
     build_usb_otg_asoundrc,
+    choose_usb_sample_rate,
     find_usb_audio_device,
     normalize_mac,
     pcm_list_contains_any,
@@ -68,6 +69,29 @@ class BlueAlsaUtilsTest(unittest.TestCase):
         cards = " 0 [Headphones     ]: bcm2835_headphon - bcm2835 Headphones\n"
         self.assertIsNone(find_usb_audio_device(cards))
         self.assertIsNone(find_usb_audio_device(""))
+
+    STREAM_44_48 = (
+        "USB Audio Device at usb-20980000.usb-1, full speed : USB Audio\n\n"
+        "Playback:\n  Status: Stop\n  Interface 1\n    Altset 1\n"
+        "    Format: S16_LE\n    Channels: 2\n    Rates: 44100, 48000\n\n"
+        "Capture:\n  Status: Stop\n    Rates: 16000\n"
+    )
+
+    def test_choose_usb_sample_rate_prefers_44100_when_native(self):
+        self.assertEqual(choose_usb_sample_rate(self.STREAM_44_48), 44100)
+
+    def test_choose_usb_sample_rate_uses_48000_when_only_option(self):
+        text = "Playback:\n  Status: Stop\n    Rates: 48000\n"
+        self.assertEqual(choose_usb_sample_rate(text), 48000)
+
+    def test_choose_usb_sample_rate_handles_continuous_range(self):
+        text = "Playback:\n    Rates: 8000 - 48000 (continuous)\n"
+        self.assertEqual(choose_usb_sample_rate(text), 44100)
+
+    def test_choose_usb_sample_rate_ignores_capture_and_missing_info(self):
+        text = "Capture:\n    Rates: 44100\n"
+        self.assertEqual(choose_usb_sample_rate(text, default=48000), 48000)
+        self.assertEqual(choose_usb_sample_rate("", default=44100), 44100)
 
     def test_pcm_list_detection(self):
         output = """null\n    Discard all samples\nbluealsa:DEV=AA:BB:CC:DD:EE:FF,PROFILE=a2dp\n    BT audio\n"""

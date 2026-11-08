@@ -131,6 +131,49 @@ def find_usb_audio_device(proc_asound_cards: str) -> str | None:
     return None
 
 
+def choose_usb_sample_rate(
+    stream_text: str,
+    preferred: Iterable[int] = (44100, 48000),
+    default: int = 48000,
+) -> int:
+    """Pick a playback sample rate the USB card supports natively.
+
+    ``stream_text`` is ``/proc/asound/<card>/stream0``.  Only the ``Playback:``
+    section is read.  Using a native rate avoids ALSA's software resampler,
+    which is expensive on a single-core Pi Zero.
+    """
+    discrete: list[int] = []
+    ranges: list[tuple[int, int]] = []
+    in_playback = False
+    for raw in (stream_text or "").splitlines():
+        line = raw.strip()
+        lowered = line.lower()
+        if lowered.startswith("playback:"):
+            in_playback = True
+            continue
+        if lowered.startswith("capture:"):
+            in_playback = False
+            continue
+        if not in_playback or not lowered.startswith("rates:"):
+            continue
+        value = line.split(":", 1)[1]
+        span = re.search(r"(\d+)\s*-\s*(\d+)", value)
+        if span:
+            ranges.append((int(span.group(1)), int(span.group(2))))
+        else:
+            discrete.extend(int(n) for n in re.findall(r"\d+", value))
+
+    def supported(rate: int) -> bool:
+        return rate in discrete or any(lo <= rate <= hi for lo, hi in ranges)
+
+    for rate in preferred:
+        if supported(rate):
+            return rate
+    if discrete:
+        return max(discrete)
+    return default
+
+
 def pcm_list_contains_device(alsa_pcm_list: str, mac: str) -> bool:
     """Return whether BlueALSA output advertises the Bluetooth device."""
     normalized = normalize_mac(mac)

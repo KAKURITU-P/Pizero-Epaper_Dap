@@ -32,6 +32,7 @@ from bluealsa_utils import (
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
     build_usb_otg_asoundrc,
+    choose_usb_sample_rate,
     find_usb_audio_device,
     pcm_list_contains_device,
 )
@@ -190,6 +191,38 @@ def set_cur_volume(vol):
         scaled_vol = alsa_levels[level_index]
         pygame.mixer.music.set_volume(scaled_vol)
 
+def get_audio_buffer_size():
+    """pygameのバッファ(サンプル数)。環境変数 DAP_AUDIO_BUFFER で調整できる。"""
+    try:
+        value = int(os.environ.get("DAP_AUDIO_BUFFER", "16384"))
+    except ValueError:
+        return 16384
+    return value if 1024 <= value <= 65536 else 16384
+
+def get_usb_otg_sample_rate():
+    """USB音声のサンプルレート。環境変数 > デバイスのネイティブ対応レート > 44100。
+
+    デバイスが対応していないレートで開くとALSAがソフトウェアでリサンプルし、
+    Pi Zeroでは音切れの原因になるため、対応レートに合わせる。
+    """
+    override = os.environ.get("DAP_USB_OTG_SAMPLE_RATE")
+    if override:
+        try:
+            rate = int(override)
+            if 8000 <= rate <= 192000:
+                return rate
+        except ValueError:
+            pass
+    match = re.search(r"CARD=([A-Za-z0-9_]+)", USB_OTG_ALSA_DEVICE)
+    if match:
+        try:
+            with open(f"/proc/asound/{match.group(1)}/stream0", "r",
+                      encoding="utf-8", errors="replace") as stream_file:
+                return choose_usb_sample_rate(stream_file.read(), default=44100)
+        except OSError:
+            pass
+    return 44100
+
 def safe_init_audio():
     try:
         if pygame.mixer.get_init():
@@ -207,10 +240,16 @@ def safe_init_audio():
 
         time.sleep(0.5)
         os.environ['SDL_AUDIODRIVER'] = 'alsa'
-        frequency = 48000 if audio_output_mode == "BT" else 44100
-        pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=16384)
+        if audio_output_mode == "BT":
+            frequency = 48000
+        elif audio_output_mode == "USBOTG":
+            frequency = get_usb_otg_sample_rate()
+        else:
+            frequency = 44100
+        buffer_size = get_audio_buffer_size()
+        pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=buffer_size)
         set_cur_volume(volume)
-        print(f"Audio initialized in [{audio_output_mode}] mode.")
+        print(f"Audio initialized in [{audio_output_mode}] mode ({frequency} Hz, buffer {buffer_size}).")
         return True
     except Exception as e:
         print(f"Audio init failed in [{audio_output_mode}] mode ({e}).")
