@@ -31,6 +31,7 @@ except ImportError:
 from bluealsa_utils import (
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
+    build_usb_otg_asoundrc,
     pcm_list_contains_device,
 )
 from network_parse_utils import (
@@ -113,11 +114,14 @@ connected_bt_mac = "25:02:27:B5:81:BE"
 
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
+USB_OTG_ALSA_DEVICE = os.environ.get("DAP_USB_OTG_ALSA_DEVICE", "plughw:1,0")
 if os.path.exists(asoundrc_path):
     with open(asoundrc_path, "r") as f:
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
+    elif USB_OTG_ALSA_DEVICE in content:
+        audio_output_mode = "USBOTG"
     else:
         audio_output_mode = "PWM"
 else:
@@ -270,22 +274,19 @@ def load_playback_mode_icons():
     try:
         sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("1")
         boxes = {}
-        if sheet.width < 37 or sheet.height < 36:
+        if sheet.width < 55 or sheet.height < 25:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
-        # The left column contains playback modes.  The right column has PWM
-        # on the first row, then a 2x2 BT/codec sprite:
-        # BT | SBC
-        # AAC | other
+        # The updated sheet is a 3x2 grid:
+        # shuffle | repeat-all | repeat-one
+        # USB OTG | PWM | Bluetooth
         boxes.update({
             "shuffle": (1, 1, 18, 12),
-            "repeat_all": (1, 13, 18, 24),
-            "repeat_one": (1, 25, 18, 36),
-            "pwm": (19, 1, 36, 12),
-            "bt": (19, 13, 28, 24),
-            "sbc": (28, 13, 36, 24),
-            "aac": (19, 25, 28, 36),
-            "other": (28, 25, 36, 36),
+            "repeat_all": (20, 1, 37, 12),
+            "repeat_one": (38, 1, 55, 12),
+            "usb": (1, 13, 18, 25),
+            "pwm": (20, 13, 37, 25),
+            "bt": (38, 13, 55, 25),
         })
 
         icons = {}
@@ -295,22 +296,14 @@ def load_playback_mode_icons():
                 "shuffle": (17, 11),
                 "repeat_all": (17, 11),
                 "repeat_one": (17, 11),
-                "pwm": (17, 11),
-                "bt": (9, 11),
-                "sbc": (8, 11),
-                "aac": (8, 11),
-                "other": (8, 11),
+                "usb": (17, 12),
+                "pwm": (17, 12),
+                "bt": (17, 12),
             }[name]
             if icon.size != icon_size:
                 icon = icon.resize(icon_size, Image.Resampling.NEAREST)
             icons[name] = icon
 
-        for codec in ("aac", "sbc", "other"):
-            if "bt" in icons and codec in icons:
-                combined = Image.new("1", (17, 11), 1)
-                combined.paste(icons["bt"], (0, 0))
-                combined.paste(icons[codec], (9, 0))
-                icons[codec] = combined
         if "pwm" not in icons:
             fallback = Image.new("1", (17, 11), 1)
             fallback_draw = ImageDraw.Draw(fallback)
@@ -1541,16 +1534,17 @@ def display_worker():
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
                     image.paste(playback_mode_icons["repeat_all"], (90, 4))
                 if timer_str:
-                    draw.text((113, 2), timer_str.strip(), font=font_main, fill=0)
-                if output_mode == "PWM":
+                    draw.text((108, 2), truncate_by_width(timer_str.strip(), font_main, 42), font=font_main, fill=0)
+                if output_mode == "USBOTG":
+                    output_icon_name = "usb"
+                elif output_mode == "PWM":
                     output_icon_name = "pwm"
                 else:
-                    codec = get_bt_codec_info().lower()
-                    output_icon_name = codec if codec in {"aac", "sbc"} else "other"
+                    output_icon_name = "bt"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (158, 4))
-                draw.text((186, 2), vol_str, font=font_main, fill=0)
+                    image.paste(output_icon, (153, 3))
+                draw.text((176, 2), vol_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
@@ -1967,7 +1961,7 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
 
-    elif mode == "PWM":
+    elif mode in ("PWM", "USBOTG"):
         was_playing = is_playing
         audio_transition_in_progress = True
         is_playing = False
@@ -1990,17 +1984,22 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
 
         try:
             with open(asoundrc_path, "w", encoding="utf-8") as file:
-                file.write(build_pwm_asoundrc())
+                config = (
+                    build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE)
+                    if mode == "USBOTG"
+                    else build_pwm_asoundrc()
+                )
+                file.write(config)
         except Exception as e:
             print(f"asoundrc write error: {e}")
 
-        audio_output_mode = "PWM"
+        audio_output_mode = mode
         safe_init_audio()
         apply_eq_settings()
         audio_transition_in_progress = False
         if was_playing:
             play_current_track(full_refresh=False)
-        status_message = "PWMモード設定"
+        status_message = f"{mode}モード設定"
         request_display_update(is_full_refresh=True)
         update_menu_items()
         request_display_update(is_full_refresh=False)
@@ -2709,6 +2708,7 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_CONN":
         menu_items = [
             "../ (戻る)",
+            f"出力先: [{audio_output_mode}]",
             "Wi-Fi設定",
             "Bluetooth設定",
             f"APモード: {'ON' if get_ap_status() else 'OFF'}"
@@ -2733,7 +2733,7 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_BT":
         _, bt_on = get_rfkill_status()
-        items = ["../ (戻る)", f"Bluetooth機能: {'ON' if bt_on else 'OFF'}", f"出力先: [{audio_output_mode}]"]
+        items = ["../ (戻る)", f"Bluetooth機能: {'ON' if bt_on else 'OFF'}"]
         if bt_on:
             items.extend(["登録済みデバイス", "新規デバイスの検索"])
         else:
@@ -3023,7 +3023,11 @@ def on_btn_menu_or_select():
                         current_screen = "PLAY"
 
                 elif current_screen == "MENU_CONN":
-                    if selected == "Wi-Fi設定":
+                    if selected.startswith("出力先:"):
+                        mode_order = ["PWM", "BT", "USBOTG"]
+                        new_mode = mode_order[(mode_order.index(audio_output_mode) + 1) % len(mode_order)]
+                        set_audio_output(new_mode, connected_bt_mac, state_lock_held=True)
+                    elif selected == "Wi-Fi設定":
                         current_screen = "MENU_WIFI"
                         refresh_wifi_menu(state_lock_held=True, reason="open-menu")
                         update_menu_items(reset_cursor=True)
@@ -3053,9 +3057,6 @@ def on_btn_menu_or_select():
                         toggle_rfkill("bt")
                         update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
-                    elif selected.startswith("出力先:"):
-                        new_mode = "BT" if audio_output_mode == "PWM" else "PWM"
-                        set_audio_output(new_mode, connected_bt_mac, state_lock_held=True)
                     elif selected == "登録済みデバイス":
                         current_screen = "MENU_BT_PAIRED"
                         bt_paired_devices_loading = True
