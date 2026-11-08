@@ -277,7 +277,7 @@ def load_playback_mode_icons():
         if sheet.width < 55 or sheet.height < 35:
             raise ValueError(f"sprite sheet is too small: {sheet.size}")
 
-                boxes.update({
+        boxes.update({
             "shuffle": (1, 1, 18, 12),
             "repeat_all": (1, 13, 18, 24),
             "repeat_one": (1, 25, 18, 36),
