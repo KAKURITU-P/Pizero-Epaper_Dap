@@ -1596,6 +1596,7 @@ def display_worker():
                 elif scr == "MENU_BT_SCAN": header_text = "Bluetooth > 新規検索"
                 elif scr == "MENU_WIFI": header_text = "接続設定 > Wi-Fi"
                 elif scr == "MENU_CONN": header_text = "メニュー > 接続設定"
+                elif scr == "MENU_OUTPUT": header_text = "接続設定 > 出力先設定"
                 elif scr == "MENU_SLEEP": header_text = "再生設定 > スリープタイマー"
 
                 draw.text((8, 2), header_text, font=font_main, fill=0)
@@ -2708,10 +2709,18 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_CONN":
         menu_items = [
             "../ (戻る)",
-            f"出力先: [{audio_output_mode}]",
+            "出力先設定",
             "Wi-Fi設定",
             "Bluetooth設定",
             f"APモード: {'ON' if get_ap_status() else 'OFF'}"
+        ]
+    elif current_screen == "MENU_OUTPUT":
+        menu_items = [
+            "../ (戻る)",
+            f"現在のモード: [{audio_output_mode}]",
+            "PWMに変更",
+            "BTに変更",
+            "USBに変更",
         ]
     elif current_screen == "MENU_WIFI":
         items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_menu_enabled else 'OFF'}"]
@@ -2946,6 +2955,8 @@ def on_btn_menu_or_select():
                                 current_screen = "MENU_TRACKS"
                     elif current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]:
                         current_screen = "MENU_TOP"
+                    elif current_screen == "MENU_OUTPUT":
+                        current_screen = "MENU_CONN"
                     elif current_screen == "MENU_SYS_RAM_ROM": current_screen = "MENU_SYS"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
@@ -3023,10 +3034,10 @@ def on_btn_menu_or_select():
                         current_screen = "PLAY"
 
                 elif current_screen == "MENU_CONN":
-                    if selected.startswith("出力先:"):
-                        mode_order = ["PWM", "BT", "USBOTG"]
-                        new_mode = mode_order[(mode_order.index(audio_output_mode) + 1) % len(mode_order)]
-                        set_audio_output(new_mode, connected_bt_mac, state_lock_held=True)
+                    if selected == "出力先設定":
+                        current_screen = "MENU_OUTPUT"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
                     elif selected == "Wi-Fi設定":
                         current_screen = "MENU_WIFI"
                         refresh_wifi_menu(state_lock_held=True, reason="open-menu")
@@ -3040,6 +3051,14 @@ def on_btn_menu_or_select():
                         toggle_ap_mode(state_lock_held=True)
                         update_menu_items(reset_cursor=False)
                         request_display_update(is_full_refresh=False)
+
+                elif current_screen == "MENU_OUTPUT":
+                    if selected == "PWMに変更":
+                        set_audio_output("PWM", state_lock_held=True)
+                    elif selected == "BTに変更":
+                        set_audio_output("BT", connected_bt_mac, state_lock_held=True)
+                    elif selected == "USBに変更":
+                        set_audio_output("USBOTG", state_lock_held=True)
 
                 elif current_screen == "MENU_WIFI":
                     if selected.startswith("Wi-Fi機能:"):
