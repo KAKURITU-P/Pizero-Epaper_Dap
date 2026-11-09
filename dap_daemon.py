@@ -1211,7 +1211,7 @@ def render_system_resource_screen(image, draw, stats):
         draw.text((8, 34), message, font=font_main, fill=0)
         return
 
-    draw.text((8, 22), "ストレージ使用量 (/)", font=font_small, fill=0)
+    draw.text((8, 22), "ストレージ使用量", font=font_small, fill=0)
     storage_text = (
         f"{format_size_bytes(stats['storage_used'])} / "
         f"{format_size_bytes(stats['storage_total'])}  "
@@ -1236,11 +1236,10 @@ def render_system_resource_screen(image, draw, stats):
     ram_fill = int((width - 21) * min(100.0, stats["ram_average_percent"]) / 100.0)
     if ram_fill > 0:
         draw.rectangle([10, 99, 9 + ram_fill, 107], fill=0)
-    draw.text((8, 111), truncate_by_width("5秒ごとに確認・変化時のみ更新", font_small, width - 16), font=font_small, fill=0)
 
 def render_system_cpu_temp_screen(image, draw, stats):
     width = image.width
-    header = "システム設定 > CPU/温度"
+    header = "システム設定 > CPU使用率/温度"
     draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
     draw.line([(0, 18), (width - 1, 18)], fill=0)
 
@@ -3085,7 +3084,7 @@ def update_menu_items(reset_cursor=True):
             f"IP: {get_ip_address()}",
             f"BTコーデック: {bt_codec}",
             "RAM/ROM使用量",
-            "CPU/温度",
+            "CPU使用率/温度",
             "再起動",
             "シャットダウン"
         ]
@@ -3745,7 +3744,7 @@ def on_btn_menu_or_select():
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
 
-                    elif selected == "CPU/温度":
+                    elif selected == "CPU使用率/温度":
                         current_screen = "MENU_SYS_CPU_TEMP"
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
