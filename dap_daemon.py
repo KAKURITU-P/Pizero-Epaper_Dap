@@ -3141,6 +3141,10 @@ def recover_bt_audio(mac):
         audio_transition_in_progress = False
 
 BT_RECONNECT_WINDOW_SEC = 10.0
+# 10秒の集中試行のあとも、イヤホンの電源を入れ直す場合に備えて間隔を空けて再接続を試す。
+# 0にすると無効(受け身で待つだけ)。電池消費を抑えるため、合計時間で打ち切る。
+BT_BACKGROUND_RETRY_INTERVAL_SEC = 20.0
+BT_BACKGROUND_RETRY_TOTAL_SEC = 300.0
 
 def audio_output_watchdog_thread():
     """USB DAC / Bluetoothの切断を検出して一時停止し、戻ったら自動で復帰させる。"""
@@ -3155,6 +3159,7 @@ def audio_output_watchdog_thread():
         if audio_output_lost and audio_output_mode == "BT" else 0.0
     )
     next_bt_attempt = 0.0
+    next_bt_background = 0.0
     next_bt_probe = 0.0
     next_bt_recover = 0.0
     bt_gave_up = False
@@ -3218,6 +3223,7 @@ def audio_output_watchdog_thread():
                         if suspend_audio_for_lost_output("BT切断"):
                             bt_window_end = time.monotonic() + BT_RECONNECT_WINDOW_SEC
                             next_bt_attempt = 0.0
+                            next_bt_background = bt_window_end + 5.0
                             next_bt_probe = 0.0
                             next_bt_recover = 0.0
                 else:
@@ -3232,6 +3238,16 @@ def audio_output_watchdog_thread():
                         request_display_update(is_full_refresh=False)
                         attempt_bt_reconnect(mac)
                         next_bt_attempt = time.monotonic() + 1.0
+                        link_back = is_bt_connected(mac)
+                    elif (
+                        not link_back
+                        and BT_BACKGROUND_RETRY_INTERVAL_SEC > 0
+                        and bt_window_end <= now < bt_window_end + BT_BACKGROUND_RETRY_TOTAL_SEC
+                        and now >= next_bt_background
+                    ):
+                        # 画面は更新せず静かに再接続を試す(電源を入れ直したイヤホンを拾う)。
+                        attempt_bt_reconnect(mac)
+                        next_bt_background = time.monotonic() + BT_BACKGROUND_RETRY_INTERVAL_SEC
                         link_back = is_bt_connected(mac)
                     if link_back:
                         if next_bt_recover == 0.0 or time.monotonic() >= next_bt_recover:
@@ -3592,7 +3608,7 @@ def on_btn_menu_or_select():
 
                     elif selected == "ライセンス表示":
                         if not check_easter_egg_trigger():
-                            status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.3 {get_git_short_hash()}]"
+                            status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.2 {get_git_short_hash()}]"
                             request_display_update(is_full_refresh=False)
                             def _clear_status():
                                 time.sleep(3.0)
