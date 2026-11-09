@@ -43,6 +43,13 @@ from bluealsa_utils import (
     has_bluetooth_acl_link,
     pcm_list_contains_device,
 )
+from system_stats_utils import (
+    cpu_usage_percent,
+    graph_points,
+    parse_cpu_times,
+    parse_temperature_celsius,
+    summarize,
+)
 from network_parse_utils import (
     is_valid_bt_mac,
     is_probably_invalid_ssid,
@@ -893,6 +900,13 @@ is_bt_scanning = False
 bt_connect_in_progress = False
 audio_transition_in_progress = False
 system_ram_usage_samples = deque(maxlen=60)
+# CPU使用率(5秒平均と、その間の1秒ごとの最大値)とSoC温度。60点 = 直近5分。
+system_cpu_mean_samples = deque(maxlen=60)
+system_cpu_peak_samples = deque(maxlen=60)
+system_temp_samples = deque(maxlen=60)
+system_cpu_temp_snapshot = None
+_cpu_prev_times = None
+_cpu_tick_values = []
 system_resource_snapshot = None
 resource_sampled_at = 0.0
 
@@ -1100,15 +1114,76 @@ def sample_system_resource_usage():
             system_resource_snapshot = {"error": str(error), "sampled_at": sample_time}
             resource_sampled_at = sample_time
 
+def read_cpu_times():
+    try:
+        with open("/proc/stat", "r", encoding="ascii") as stat_file:
+            return parse_cpu_times(stat_file.readline())
+    except (OSError, ValueError):
+        return None
+
+def read_soc_temperature():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r", encoding="ascii") as temp_file:
+            return parse_temperature_celsius(temp_file.read())
+    except (OSError, ValueError):
+        return None
+
+def sample_cpu_tick():
+    """1秒ごとに呼び、/proc/stat の差分からCPU使用率を貯める。"""
+    global _cpu_prev_times
+    current = read_cpu_times()
+    usage = cpu_usage_percent(_cpu_prev_times, current)
+    _cpu_prev_times = current
+    if usage is not None:
+        _cpu_tick_values.append(usage)
+
+def commit_cpu_temp_sample():
+    """5秒ごとに呼び、貯めたCPU値の平均・最大と温度を履歴に追加して集計する。"""
+    global system_cpu_temp_snapshot
+    values = list(_cpu_tick_values)
+    _cpu_tick_values.clear()
+    temperature = read_soc_temperature()
+    with state_lock:
+        if values:
+            system_cpu_mean_samples.append(sum(values) / len(values))
+            system_cpu_peak_samples.append(max(values))
+        if temperature is not None:
+            system_temp_samples.append(temperature)
+        history = list(system_cpu_mean_samples)
+        cpu_summary = summarize(history)
+        temp_summary = summarize(system_temp_samples)
+        peaks = list(system_cpu_peak_samples)
+        system_cpu_temp_snapshot = {
+            "cpu_history": history,
+            "cpu_current": cpu_summary["current"] if cpu_summary else None,
+            "cpu_average": cpu_summary["average"] if cpu_summary else None,
+            "cpu_peak": max(peaks) if peaks else None,
+            "temp_current": temp_summary["current"] if temp_summary else None,
+            "temp_average": temp_summary["average"] if temp_summary else None,
+            "temp_peak": temp_summary["peak"] if temp_summary else None,
+            "sample_count": len(history),
+        }
+
+RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP")
+
 def system_resource_monitor_thread():
-    """Keep resource statistics current even while their screen is closed."""
+    """画面を開いていなくても統計を貯め続ける。CPUは1秒、RAM/温度は5秒ごと。"""
+    tick = 0
     while True:
-        sample_system_resource_usage()
-        with state_lock:
-            resource_screen_active = current_screen == "MENU_SYS_RAM_ROM"
-        if resource_screen_active:
-            request_display_update(is_full_refresh=False)
-        time.sleep(5)
+        try:
+            sample_cpu_tick()
+            if tick % 5 == 0:
+                sample_system_resource_usage()
+                commit_cpu_temp_sample()
+                with state_lock:
+                    resource_screen_active = current_screen in RESOURCE_SCREENS
+                if resource_screen_active:
+                    # 表示内容が前回と同じなら display_worker 側で送信が省かれる。
+                    request_display_update(is_full_refresh=False)
+        except Exception as error:
+            print(f"System monitor error: {error}")
+        tick += 1
+        time.sleep(1)
 
 def format_size_bytes(value):
     amount = float(value)
@@ -1117,6 +1192,13 @@ def format_size_bytes(value):
             return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
         amount /= 1024.0
     return f"{amount:.1f} TB"
+
+def format_ram_bytes(value, total):
+    """RAM平均の表示用。0.1MB単位だと5秒ごとに表示が変わり画面更新が増えるため、
+    1GB未満は整数MBで表示する(変化が目に見える程度のときだけ更新される)。"""
+    if total >= 1024 ** 3:
+        return format_size_bytes(value)
+    return f"{value / (1024 ** 2):.0f} MB"
 
 def render_system_resource_screen(image, draw, stats):
     width = image.width
@@ -1145,8 +1227,8 @@ def render_system_resource_screen(image, draw, stats):
     period_label = "直近5分平均" if count >= 60 else f"RAM平均 (測定中 {count}/60)"
     draw.text((8, 69), period_label, font=font_small, fill=0)
     ram_text = (
-        f"{format_size_bytes(stats['ram_average_used'])} / "
-        f"{format_size_bytes(stats['ram_average_total'])}  "
+        f"{format_ram_bytes(stats['ram_average_used'], stats['ram_average_total'])} / "
+        f"{format_ram_bytes(stats['ram_average_total'], stats['ram_average_total'])}  "
         f"{stats['ram_average_percent']:.0f}%"
     )
     draw.text((8, 82), truncate_by_width(ram_text, font_small, width - 16), font=font_small, fill=0)
@@ -1154,7 +1236,52 @@ def render_system_resource_screen(image, draw, stats):
     ram_fill = int((width - 21) * min(100.0, stats["ram_average_percent"]) / 100.0)
     if ram_fill > 0:
         draw.rectangle([10, 99, 9 + ram_fill, 107], fill=0)
-    draw.text((8, 111), "5秒ごとに更新", font=font_small, fill=0)
+    draw.text((8, 111), truncate_by_width("5秒ごとに確認・変化時のみ更新", font_small, width - 16), font=font_small, fill=0)
+
+def render_system_cpu_temp_screen(image, draw, stats):
+    width = image.width
+    header = "システム設定 > CPU/温度"
+    draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
+    draw.line([(0, 18), (width - 1, 18)], fill=0)
+
+    if not stats or not stats.get("cpu_history"):
+        draw.text((8, 34), "使用率を計測中...", font=font_main, fill=0)
+        return
+
+    def pct(value):
+        return "--" if value is None else f"{value:.0f}%"
+
+    def deg(value):
+        return "--" if value is None else f"{value:.1f}°C"
+
+    cpu_line = f"CPU {pct(stats['cpu_current'])}  平均{pct(stats['cpu_average'])}  最大{pct(stats['cpu_peak'])}"
+    draw.text((8, 21), truncate_by_width(cpu_line, font_small, width - 16), font=font_small, fill=0)
+    if stats.get("temp_current") is None:
+        temp_line = "温度 取得できません"
+    else:
+        temp_line = (
+            f"温度 {deg(stats['temp_current'])}  平均{deg(stats['temp_average'])}  "
+            f"最大{deg(stats['temp_peak'])}"
+        )
+    draw.text((8, 35), truncate_by_width(temp_line, font_small, width - 16), font=font_small, fill=0)
+
+    # グラフ: 縦0〜100%固定、新しい値が右端。中央の点線が50%。
+    box = (8, 50, width - 9, 105)
+    draw.rectangle(list(box), outline=0, fill=255, width=1)
+    inner = (box[0] + 2, box[1] + 2, box[2] - 2, box[3] - 2)
+    middle = (inner[1] + inner[3]) // 2
+    for x in range(inner[0], inner[2], 6):
+        draw.point((x, middle), fill=0)
+    points = graph_points(stats["cpu_history"], inner, slots=60)
+    if len(points) >= 2:
+        draw.line(points, fill=0, width=1)
+    elif points:
+        x, y = points[0]
+        draw.rectangle([x - 1, y - 1, x + 1, y + 1], fill=0)
+
+    count = stats["sample_count"]
+    caption = "直近5分のCPU使用率 (5秒平均)" if count >= 60 else f"CPU使用率 (測定中 {count}/60)"
+    draw.text((8, 107), truncate_by_width(caption, font_small, width - 16), font=font_small, fill=0)
 
 def get_current_wifi_ssid():
     try:
@@ -1598,6 +1725,7 @@ def display_worker():
     current_epd_mode = None
     partial_refresh_count = 0
     previous_screen = None
+    last_pushed_frame = None   # 直近にパネルへ送ったバッファ。同じ内容なら再送しない。
 
     while True:
         try:
@@ -1627,6 +1755,10 @@ def display_worker():
                     dict(system_resource_snapshot)
                     if system_resource_snapshot is not None else None
                 )
+                cpu_temp_stats = (
+                    dict(system_cpu_temp_snapshot)
+                    if system_cpu_temp_snapshot is not None else None
+                )
 
                 current_sec = get_current_sec()
                 tot_sec = total_duration_sec
@@ -1647,6 +1779,9 @@ def display_worker():
 
             elif scr == "MENU_SYS_RAM_ROM":
                 render_system_resource_screen(image, draw, resource_stats)
+
+            elif scr == "MENU_SYS_CPU_TEMP":
+                render_system_cpu_temp_screen(image, draw, cpu_temp_stats)
 
             elif scr == "PLAY":
                 # スリープタイマー表示生成
@@ -1757,6 +1892,19 @@ def display_worker():
 
             buf = epd.getbuffer(image)
 
+            # 部分更新で、画面種別も前回から変わらず、描画結果が前回と完全に同じなら
+            # パネルへ送らない(ちらつき・残像・消費電力・SPI負荷を避ける)。
+            # 全画面更新(is_full)や画面切替、初回、エラー後は必ず送る。
+            if (
+                not is_full
+                and current_epd_mode == "PARTIAL"
+                and scr == previous_screen
+                and last_pushed_frame is not None
+                and bytes(buf) == last_pushed_frame
+            ):
+                display_queue.task_done()
+                continue
+
             if is_full or current_epd_mode is None:
                 epd.init()
                 epd.display(buf)
@@ -1770,11 +1918,13 @@ def display_worker():
                 epd.displayPartial(buf)
                 partial_refresh_count += 1
 
+            last_pushed_frame = bytes(buf)
             previous_screen = scr
             display_queue.task_done()
         except Exception as e:
             print(f"Display render error: {e}")
             current_epd_mode = None
+            last_pushed_frame = None
             time.sleep(0.1)
 
 threading.Thread(target=display_worker, daemon=True).start()
@@ -2935,13 +3085,14 @@ def update_menu_items(reset_cursor=True):
             f"IP: {get_ip_address()}",
             f"BTコーデック: {bt_codec}",
             "RAM/ROM使用量",
+            "CPU/温度",
             "再起動",
             "シャットダウン"
         ]
         if is_clock_unlocked or is_eq_unlocked:
             items.insert(5, "隠し機能を削除")
         menu_items = items
-    elif current_screen == "MENU_SYS_RAM_ROM":
+    elif current_screen in RESOURCE_SCREENS:
         menu_items = ["../ (戻る)"]
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
@@ -3390,7 +3541,7 @@ def on_btn_menu_or_select():
                         current_screen = "MENU_TOP"
                     elif current_screen == "MENU_OUTPUT":
                         current_screen = "MENU_CONN"
-                    elif current_screen == "MENU_SYS_RAM_ROM": current_screen = "MENU_SYS"
+                    elif current_screen in RESOURCE_SCREENS: current_screen = "MENU_SYS"
                     elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
                     elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
                     elif current_screen in ["MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
@@ -3594,6 +3745,11 @@ def on_btn_menu_or_select():
                         update_menu_items(reset_cursor=True)
                         request_display_update(is_full_refresh=True)
 
+                    elif selected == "CPU/温度":
+                        current_screen = "MENU_SYS_CPU_TEMP"
+                        update_menu_items(reset_cursor=True)
+                        request_display_update(is_full_refresh=True)
+
                     elif selected == "GitHubから更新":
                         start_github_update()
 
@@ -3645,7 +3801,7 @@ def on_btn_play_or_back():
 
         if exit_cat_clock_if_needed(): return
 
-        if current_screen == "MENU_SYS_RAM_ROM":
+        if current_screen in RESOURCE_SCREENS:
             current_screen = "MENU_SYS"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
@@ -3894,7 +4050,7 @@ try:
                     last_drawn_segment = current_segment
                     request_display_update(is_full_refresh=False)
 
-            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ", "MENU_SYS_RAM_ROM"] and (now - last_user_action_time > 10):
+            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ", *RESOURCE_SCREENS] and (now - last_user_action_time > 10):
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
