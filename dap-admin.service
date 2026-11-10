@@ -9,6 +9,9 @@ WorkingDirectory=/home/pi/dap
 ExecStart=/usr/bin/python3 /home/pi/dap/web_admin_server.py
 Restart=always
 RestartSec=3
+# 管理画面は音楽再生(dap.service)より低い優先度で動かす
+Nice=15
+CPUWeight=20
 
 [Install]
 WantedBy=multi-user.target

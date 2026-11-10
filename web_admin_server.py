@@ -13,7 +13,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -99,6 +99,42 @@ def command_output(command, timeout=8):
         return ""
 
 
+class TtlCache:
+    """計算結果を一定時間だけ再利用する。同時に来た要求でも計算は1回だけ行う。
+
+    管理画面を開くたびに外部プロセスやGitHub通信を繰り返すと、Pi Zero(シングルコア)では
+    音楽再生のCPUを奪うため、結果をキャッシュして重い処理の頻度を下げる。
+    """
+
+    def __init__(self, ttl_sec, clock=time.monotonic):
+        self.ttl_sec = ttl_sec
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._value = None
+        self._stamp = None
+
+    def get(self, compute, force=False):
+        """(値, キャッシュを使ったか) を返す。計算が例外なら何も保存しない。"""
+        with self._lock:
+            now = self._clock()
+            if (
+                not force
+                and self._stamp is not None
+                and now - self._stamp < self.ttl_sec
+            ):
+                return self._value, True
+            value = compute()
+            self._value = value
+            self._stamp = self._clock()
+            return value, False
+
+
+STATUS_CACHE_TTL_SEC = 8.0
+GITHUB_CHECK_TTL_SEC = 600.0
+STATUS_CACHE = TtlCache(STATUS_CACHE_TTL_SEC)
+GITHUB_CHECK_CACHE = TtlCache(GITHUB_CHECK_TTL_SEC)
+
+
 def get_github_update():
     with GITHUB_UPDATE_LOCK:
         return dict(GITHUB_UPDATE)
@@ -150,14 +186,21 @@ def git_revision_info(fetch=False):
     return info
 
 
-def refresh_github_info():
-    info = git_revision_info(fetch=True)
-    with GITHUB_UPDATE_LOCK:
-        GITHUB_UPDATE.update(info)
-        if info["current"]["full_hash"] == info["latest"]["full_hash"]:
-            GITHUB_UPDATE.update({"state": "latest", "message": "GitHubは最新です"})
-        else:
-            GITHUB_UPDATE.update({"state": "ready", "message": "更新があります"})
+def refresh_github_info(force=True):
+    """GitHubの最新コミットを確認する。force=Falseなら10分以内の結果を再利用する。"""
+
+    def compute():
+        info = git_revision_info(fetch=True)
+        with GITHUB_UPDATE_LOCK:
+            GITHUB_UPDATE.update(info)
+            if info["current"]["full_hash"] == info["latest"]["full_hash"]:
+                GITHUB_UPDATE.update({"state": "latest", "message": "GitHubは最新です"})
+            else:
+                GITHUB_UPDATE.update({"state": "ready", "message": "更新があります"})
+        return True
+
+    GITHUB_CHECK_CACHE.get(compute, force=force)
+    # キャッシュ利用時も、更新ジョブの進行状況など現在の状態を返す。
     return get_github_update()
 
 
@@ -533,7 +576,7 @@ def save_favorite_order(relative_paths):
     return {"favorites": relative_paths}
 
 
-def get_status():
+def _build_status():
     try:
         storage = shutil.disk_usage("/home/pi/music")
         storage_info = {"used": storage.used, "total": storage.total,
@@ -570,6 +613,12 @@ def get_status():
     }
 
 
+def get_status():
+    """状態を返す。外部プロセスを多数起動するため、8秒間は結果を再利用する。"""
+    value, _ = STATUS_CACHE.get(_build_status)
+    return value
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "DAPAdmin/1.0"
 
@@ -592,7 +641,9 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         try:
             if path == "/":
                 body = PAGE_FILE.read_bytes()
@@ -645,7 +696,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/update":
                 self.send_json(get_github_update())
             elif path == "/api/update/check":
-                self.send_json(refresh_github_info())
+                # 画面を開いたときの自動確認は10分キャッシュ、手動ボタンは ?force=1 で最新を取る。
+                self.send_json(refresh_github_info(force=query.get("force") == ["1"]))
             elif path == "/api/favorites":
                 self.send_json(get_favorites())
             else:
@@ -696,5 +748,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    try:
+        os.nice(10)  # 再生(dap.service)より優先度を下げる。子プロセスにも引き継がれる。
+    except OSError:
+        pass
     server = ThreadingHTTPServer(("127.0.0.1", 8080), Handler)
     server.serve_forever()
