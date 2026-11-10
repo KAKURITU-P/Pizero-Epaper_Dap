@@ -125,8 +125,9 @@ try:
 except ImportError:
     HAS_MUTAGEN = False
 
-# デフォルト接続先 MAC アドレス
-connected_bt_mac = "25:02:27:B5:81:BE"
+# 接続先 MAC アドレス。未選択のまま「BTに変更」した場合に他人の機器へ
+# ペアリング試行しないよう、既定値は空(=未選択)とする。
+connected_bt_mac = ""
 
 # 出力デバイス(USB DAC / Bluetooth)が消えてmixerを止めている間はTrue。
 audio_output_lost = False
@@ -320,33 +321,69 @@ elif not safe_init_audio() and audio_output_mode == "BT":
 # --- 2. e-Paper 初期化 ---
 epd = epd2in13.EPD()
 
+# パネル(SPI/GPIO)へ触るのはdisplay_workerとシャットダウン演出だけにし、
+# このロックで二重アクセスを防ぐ。BUSYはパネル側の入力信号のため、
+# 競合でリフレッシュが中断されると白画面へ上書きできなくなる。
+epd_lock = threading.Lock()
+
+# シャットダウン演出は1回だけ実行する。メニュー経由の再起動後にSIGTERMが
+# 届いても二重に描画しないよう、進行中/完了をフラグで管理する。
+shutdown_display_lock = threading.Lock()
+shutdown_display_owner = None   # 描画中スレッドのident(同一スレッド再帰呼び出し検出用)
+shutdown_display_done = False
+shutdown_exit_requested = False # SIGTERMで描画を中断しないための終了要求フラグ
+
 def clean_shutdown_display(message="Power Off..."):
-    save_resume_state()
+    global shutdown_display_owner, shutdown_display_done
+    if shutdown_display_owner == threading.get_ident():
+        # SIGTERMハンドラなど同一スレッドからの再帰呼び出しは実行中の描画に委ねる
+        return
+    if not shutdown_display_lock.acquire(timeout=30.0):
+        print("Shutdown display skipped: another shutdown display is running.")
+        return
     try:
-        pygame.mixer.music.stop()
-    except Exception:
-        pass
+        if shutdown_display_done:
+            return
+        shutdown_display_owner = threading.get_ident()
+        save_resume_state()
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
 
-    try:
-        epd.init()
-        
-        img = Image.new('1', (epd.height, epd.width), 255)
-        draw = ImageDraw.Draw(img)
-
-        w, h = epd.height, epd.width
-        draw.rectangle([0, 0, w, h], fill=255)
-        draw.text((20, (h // 2) - 10), message, font=font_title, fill=0)
-
-        epd.display(epd.getbuffer(img))
-        time.sleep(1.0)
-        
-        epd.Clear()
-        epd.sleep()
-    except Exception as e:
-        print(f"Shutdown display error: {e}")
+        try:
+            with epd_lock:
+                epd.init()
+                img = Image.new('1', (epd.height, epd.width), 255)
+                draw = ImageDraw.Draw(img)
+                w, h = epd.height, epd.width
+                draw.rectangle([0, 0, w, h], fill=255)
+                draw.text((20, (h // 2) - 10), message, font=font_title, fill=0)
+                epd.display(epd.getbuffer(img))
+                time.sleep(1.0)
+                epd.Clear()
+                epd.sleep()
+        except Exception as e:
+            print(f"Shutdown display error: {e}")
+        # 描画に失敗してもパネル状態は不定のため再試行はしない
+        shutdown_display_done = True
+    finally:
+        shutdown_display_owner = None
+        shutdown_display_lock.release()
 
 def handle_signal(sig, frame):
+    global shutdown_exit_requested
+    shutdown_exit_requested = True
     clean_shutdown_display("Shutting down...")
+    if shutdown_display_owner == threading.get_ident():
+        # 描画を自分で実行中の場合はSystemExitで中断しない。メインループ側で終了する。
+        return
+    if not shutdown_display_done:
+        # 別スレッドが描画中の可能性があるため、完了を待ってから終了する。
+        deadline = time.monotonic() + 30.0
+        while not shutdown_display_done and time.monotonic() < deadline:
+            time.sleep(0.2)
+    # 描画を自分で実行していない場合のみここへ届く。即終了する。
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, handle_signal)
@@ -670,21 +707,37 @@ def toggle_favorite_current_track():
         return False
     return toggle_favorite_by_path(playlist[current_track_idx])
 
+# save_resume_stateはstate_lockを取らない経路(watchdogの復帰処理)からも
+# 呼ばれるため、一時ファイル競合を避ける専用ロックで直列化する。
+resume_save_lock = threading.Lock()
+
 def save_resume_state():
     if not playlist or current_track_idx >= len(playlist):
         return
+    # 電源断に備え、他のJSONと同様に一時ファイル+置換でアトミックに書き込む。
+    temp_file = RESUME_FILE + ".tmp"
     try:
-        data = {
-            "filepath": playlist[current_track_idx],
-            "track_idx": current_track_idx,
-            "playlist": playlist,
-            "playlist_base": playlist_base or playlist,
-            "is_shuffle": is_shuffle,
-        }
-        with open(RESUME_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with resume_save_lock:
+            data = {
+                "filepath": playlist[current_track_idx],
+                "track_idx": current_track_idx,
+                "playlist": playlist,
+                "playlist_base": playlist_base or playlist,
+                "is_shuffle": is_shuffle,
+            }
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, RESUME_FILE)
     except Exception as e:
         print(f"Resume save error: {e}")
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass
 
 def load_resume_state():
     global current_track_idx, playlist, playlist_base, is_shuffle
@@ -927,10 +980,14 @@ def status_notification_expiry_thread():
             observed_message = message
             changed_at = now
         elif message and not message.startswith(in_progress_prefixes) and now - changed_at >= 5.0:
-            status_message = ""
-            observed_message = ""
-            changed_at = now
-            request_display_update(is_full_refresh=False)
+            # 他スレッド(state_lock下)が書き換えた新しいメッセージを
+            # 期限切れ扱いで消してしまわないよう、ロック下で最新値を確認してから消す。
+            with state_lock:
+                if status_message == message:
+                    status_message = ""
+                    observed_message = ""
+                    changed_at = now
+                    request_display_update(is_full_refresh=False)
         time.sleep(0.2)
 
 
@@ -1004,6 +1061,7 @@ def debounce(btn_name):
 def get_ip_address():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
@@ -1166,6 +1224,22 @@ def commit_cpu_temp_sample():
 
 RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP")
 
+# メニュー表示用のIP/コーデックはバックグラウンドで取得してキャッシュする。
+# state_lock保持中にbusctlやIP確認を実行すると全スレッドが止まるため。
+menu_ip_address = "取得中..."
+menu_bt_codec = "取得待ち"
+
+def sample_menu_info_values():
+    global menu_ip_address, menu_bt_codec
+    try:
+        menu_ip_address = get_ip_address()
+    except Exception as error:
+        print(f"IP address check error: {error}")
+    try:
+        menu_bt_codec = get_bt_codec_info()
+    except Exception as error:
+        print(f"BT codec check error: {error}")
+
 def system_resource_monitor_thread():
     """画面を開いていなくても統計を貯め続ける。CPUは1秒、RAM/温度は5秒ごと。"""
     tick = 0
@@ -1173,6 +1247,7 @@ def system_resource_monitor_thread():
         try:
             sample_cpu_tick()
             if tick % 5 == 0:
+                sample_menu_info_values()
                 sample_system_resource_usage()
                 commit_cpu_temp_sample()
                 with state_lock:
@@ -1904,18 +1979,24 @@ def display_worker():
                 display_queue.task_done()
                 continue
 
-            if is_full or current_epd_mode is None:
-                epd.init()
-                epd.display(buf)
-                epd.displayPartBaseImage(buf)
-                current_epd_mode = "PARTIAL"
-                partial_refresh_count = 0
-            else:
-                if current_epd_mode != "PARTIAL":
-                    epd.initPartial()
+            with epd_lock:
+                if shutdown_display_done:
+                    # シャットダウン演出済み。パネルをこれ以上触らず描画ループを終える。
+                    display_queue.task_done()
+                    break
+
+                if is_full or current_epd_mode is None:
+                    epd.init()
+                    epd.display(buf)
+                    epd.displayPartBaseImage(buf)
                     current_epd_mode = "PARTIAL"
-                epd.displayPartial(buf)
-                partial_refresh_count += 1
+                    partial_refresh_count = 0
+                else:
+                    if current_epd_mode != "PARTIAL":
+                        epd.initPartial()
+                        current_epd_mode = "PARTIAL"
+                    epd.displayPartial(buf)
+                    partial_refresh_count += 1
 
             last_pushed_frame = bytes(buf)
             previous_screen = scr
@@ -3074,15 +3155,14 @@ def update_menu_items(reset_cursor=True):
         menu_items = items
 
     elif current_screen == "MENU_SYS":
-        bt_codec = get_bt_codec_info()
         items = [
             "../ (戻る)",
             "曲ライブラリ再読み込み",
             "GitHubから更新",
             "アプリ再起動",
             "ライセンス表示",
-            f"IP: {get_ip_address()}",
-            f"BTコーデック: {bt_codec}",
+            f"IP: {menu_ip_address}",
+            f"BTコーデック: {menu_bt_codec}",
             "RAM/ROM使用量",
             "CPU使用率/温度",
             "再起動",
@@ -3995,6 +4075,9 @@ try:
 
     while True:
         time.sleep(0.2)
+        if shutdown_exit_requested:
+            # SIGTERM時に描画中だった場合は描画完了後にここで終了する
+            sys.exit(0)
         now = time.time()
         sync_favorites()
 
@@ -4016,27 +4099,29 @@ try:
             subprocess.run(["sudo", "shutdown", "-h", "now"])
 
         # --- 曲の再生・終了監視 ---
+        # watchdogの音声切替(suspend_audio_for_lost_output)と競合しないよう
+        # 状態確認から次曲送りまでをstate_lock下で一括して行う。
         if is_playing:
             with state_lock:
                 cur_sec = get_current_sec()
-            try:
-                mixer_initialized = pygame.mixer.get_init() is not None
-                music_busy = pygame.mixer.music.get_busy() if mixer_initialized else False
-            except pygame.error as e:
-                print(f"Audio monitor error: {e}")
-                mixer_initialized = False
-                music_busy = False
+                try:
+                    mixer_initialized = pygame.mixer.get_init() is not None
+                    music_busy = pygame.mixer.music.get_busy() if mixer_initialized else False
+                except pygame.error as e:
+                    print(f"Audio monitor error: {e}")
+                    mixer_initialized = False
+                    music_busy = False
 
-            if not mixer_initialized:
-                is_playing = False
-            elif not music_busy and not audio_transition_in_progress:
-                handle_track_completion()
-            elif (
-                not audio_transition_in_progress
-                and total_duration_sec > 0
-                and cur_sec >= total_duration_sec + 1
-            ):
-                handle_track_completion()
+                if not mixer_initialized:
+                    is_playing = False
+                elif not music_busy and not audio_transition_in_progress:
+                    handle_track_completion()
+                elif (
+                    not audio_transition_in_progress
+                    and total_duration_sec > 0
+                    and cur_sec >= total_duration_sec + 1
+                ):
+                    handle_track_completion()
 
         with state_lock:
             cur_sec = get_current_sec()
