@@ -476,17 +476,19 @@
         }
       } catch (error) { message("github-update-message", error.message, "error"); }
     }
-    $("github-check").onclick = async () => {
+    // force=true は手動ボタン(必ず最新を取得)。画面表示時の自動確認はサーバー側で10分キャッシュされる。
+    async function runGithubCheck(force) {
       $("github-check").disabled = true;
       message("github-update-message", "GitHubの最新コミットを確認しています…");
       try {
-        const update = await api("/api/update/check");
+        const update = await api(force ? "/api/update/check?force=1" : "/api/update/check");
         renderGithubRevision(update);
         message("github-update-message", update.message || "", update.state === "error" ? "error" : "success");
       } catch (error) {
         message("github-update-message", error.message, "error");
       } finally { $("github-check").disabled = false; }
-    };
+    }
+    $("github-check").onclick = () => runGithubCheck(true);
     $("github-update").onclick = async () => {
       if (!window.confirm("GitHubから更新して管理画面を再起動します。実行しますか？")) return;
       $("github-update").disabled = true;
@@ -500,7 +502,10 @@
         $("github-update").disabled = false;
       }
     };
-    loadAp(); loadFavorites(); refreshStatus(); $("github-check").click(); setInterval(refreshStatus, 10000);
+    loadAp(); loadFavorites(); refreshStatus(); runGithubCheck(false);
+    // 状態の取得は外部コマンドを多数起動するため、30秒ごと・タブが見えている間だけ行う。
+    setInterval(() => { if (!document.hidden) refreshStatus(); }, 30000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
   </script>
 </body>
 </html>
