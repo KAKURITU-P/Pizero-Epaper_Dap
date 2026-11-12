@@ -243,20 +243,31 @@ def github_update_worker():
             set_github_update("latest", "GitHubは最新です")
             return
 
+        # stashの前にff-only更新が可能か先に判定する。判定を後回しにすると、
+        # stash済みのユーザー変更がmerge失敗時にstash内へ取り残される。
+        ff_possible = run_git(["merge-base", "--is-ancestor", "HEAD", target.stdout.strip()], timeout=15)
+        if ff_possible.returncode != 0:
+            raise RuntimeError("履歴が分岐しているため安全に更新できませんでした")
+
         local_changes = run_git(["status", "--porcelain", "--untracked-files=all"], timeout=15)
         if local_changes.returncode != 0:
             raise RuntimeError("ローカル変更を確認できません")
+        stashed = False
         if local_changes.stdout.strip():
-            stashed = run_git([
+            stashed_result = run_git([
                 "stash", "push", "--include-untracked",
                 "-m", "DAP local changes before GitHub update",
             ])
-            if stashed.returncode != 0:
-                detail = (stashed.stderr or stashed.stdout or "ローカル変更を退避できませんでした").strip()[-180:]
+            if stashed_result.returncode != 0:
+                detail = (stashed_result.stderr or stashed_result.stdout or "ローカル変更を退避できませんでした").strip()[-180:]
                 raise RuntimeError(detail)
+            stashed = True
 
         merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
         if merged.returncode != 0:
+            # ユーザー変更がstash内に取り残されないよう、失敗時はstashを戻す。
+            if stashed:
+                run_git(["stash", "pop"], timeout=30)
             detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
             raise RuntimeError(detail)
 

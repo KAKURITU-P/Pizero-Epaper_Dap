@@ -21,6 +21,7 @@ import contextlib
 import ctypes
 import json
 import shutil
+import tempfile
 import pygame
 from collections import deque
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -136,6 +137,28 @@ audio_lost_action = None
 
 # --- オーディオ出力状態確認 & 初期サービス起動 ---
 asoundrc_path = os.path.expanduser("~/.asoundrc")
+
+def write_text_atomically(path, content):
+    """設定ファイルを一時ファイル経由で安全に置き換える。
+
+    一時ファイル名を呼び出しごとに一意にし、複数スレッドからの
+    並行書き込みでも互いの一時ファイルを壊さないようにする。
+    起動直後のPWM設定書き込みからも使うため、モジュール前方で定義する。
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    temp_fd, temp_path = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=directory)
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
 USB_OTG_ALSA_DEVICE_ENV = os.environ.get("DAP_USB_OTG_ALSA_DEVICE")
 
 def resolve_usb_otg_device():
@@ -173,9 +196,8 @@ else:
 
 if audio_output_mode == "PWM":
     try:
-        with open(asoundrc_path, "w", encoding="utf-8") as file:
-            file.write(build_pwm_asoundrc())
-    except OSError as error:
+        write_text_atomically(asoundrc_path, build_pwm_asoundrc())
+    except Exception as error:
         print(f"PWM ALSA設定更新失敗: {error}")
 
 # オーディオ経路は選択状態に合わせる。Wi-Fi / Bluetooth 無線状態は変更しない。
@@ -299,8 +321,7 @@ def init_usb_otg_audio(attempts=4, delay=1.0):
             continue
         USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
         try:
-            with open(asoundrc_path, "w", encoding="utf-8") as file:
-                file.write(build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE))
+            write_text_atomically(asoundrc_path, build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE))
         except Exception as error:
             print(f"USB OTG ALSA設定更新失敗: {error}")
             continue
@@ -345,6 +366,11 @@ def clean_shutdown_display(message="Power Off..."):
         if shutdown_display_done:
             return
         shutdown_display_owner = threading.get_ident()
+        # 予約中のsettings.json書き込み(EQ調整など)を終了前に確定させる。
+        try:
+            flush_pending_settings_save()
+        except Exception as error:
+            print(f"Settings flush error: {error}")
         save_resume_state()
         try:
             pygame.mixer.music.stop()
@@ -543,7 +569,7 @@ eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}
 eq_cursor = 0
 
 def load_settings():
-    global is_clock_unlocked, is_eq_unlocked, eq_values
+    global is_clock_unlocked, is_eq_unlocked, eq_values, is_shuffle, repeat_mode
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -558,6 +584,11 @@ def load_settings():
                 value = saved_eq.get(band, 0)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     eq_values[band] = max(-6, min(6, int(value)))
+        # 再生設定もsettings.jsonに永続化する。レジューム失敗時でも設定を失わない。
+        is_shuffle = bool(data.get("is_shuffle", False))
+        saved_repeat = data.get("repeat_mode", repeat_mode)
+        if isinstance(saved_repeat, int) and not isinstance(saved_repeat, bool) and 0 <= saved_repeat <= 2:
+            repeat_mode = saved_repeat
     except FileNotFoundError:
         pass
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
@@ -570,6 +601,8 @@ def save_settings():
             "is_clock_unlocked": is_clock_unlocked,
             "is_eq_unlocked": is_eq_unlocked,
             "eq_values": {band: eq_values[band] for band in eq_bands},
+            "is_shuffle": is_shuffle,
+            "repeat_mode": repeat_mode,
         }
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -582,6 +615,24 @@ def save_settings():
                 os.remove(temp_file)
         except OSError:
             pass
+
+# EQ調整のように連打が続く操作でのSD書き込みを避けるため、
+# settings.jsonの保存は短い遅延を置いてまとめて行う。
+_settings_save_dirty = False
+_settings_save_due = 0.0
+
+def schedule_settings_save(delay=1.5):
+    """settings.jsonの書き込みをdelay秒後にまとめて実行するよう予約する。"""
+    global _settings_save_dirty, _settings_save_due
+    _settings_save_dirty = True
+    _settings_save_due = time.time() + delay
+
+def flush_pending_settings_save():
+    """予約済みのsettings.json書き込みを即時実行する(終了時・メインループから)。"""
+    global _settings_save_dirty
+    if _settings_save_dirty:
+        _settings_save_dirty = False
+        save_settings()
 
 def load_favorites():
     global favorites_list, favorites_file_mtime
@@ -715,19 +766,24 @@ def save_resume_state():
     if not playlist or current_track_idx >= len(playlist):
         return
     # 電源断に備え、他のJSONと同様に一時ファイル+置換でアトミックに書き込む。
+    # パスはMUSIC_DIR基準の相対表記・indentなしで書き、曲替えごとの書き込み量を抑える。
+    # 再生設定(シャッフル等)はsettings.json側に保存するため、ここには含めない。
     temp_file = RESUME_FILE + ".tmp"
     try:
         with resume_save_lock:
+            def _rel(path):
+                try:
+                    return os.path.relpath(path, MUSIC_DIR)
+                except ValueError:
+                    return path
             data = {
-                "filepath": playlist[current_track_idx],
+                "filepath": _rel(playlist[current_track_idx]),
                 "track_idx": current_track_idx,
-                "playlist": playlist,
-                "playlist_base": playlist_base or playlist,
-                "is_shuffle": is_shuffle,
+                "playlist": [_rel(path) for path in playlist],
+                "playlist_base": [_rel(path) for path in (playlist_base or playlist)],
             }
             with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.write("\n")
+                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_file, RESUME_FILE)
@@ -740,38 +796,46 @@ def save_resume_state():
             pass
 
 def load_resume_state():
-    global current_track_idx, playlist, playlist_base, is_shuffle
+    global current_track_idx, playlist, playlist_base
     if os.path.exists(RESUME_FILE):
         try:
             with open(RESUME_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 filepath = data.get("filepath")
+                # 再生設定はsettings.jsonに移ったため、ここでは読まない。
                 library_paths = set(playlist_original)
+                def _restore_path(path):
+                    """保存値はMUSIC_DIR基準の相対パス。絶対パス(旧形式)も受ける。"""
+                    if not isinstance(path, str):
+                        return None
+                    absolute = path if os.path.isabs(path) else os.path.normpath(os.path.join(MUSIC_DIR, path))
+                    return absolute if absolute in library_paths else None
                 saved_playlist = data.get("playlist")
                 saved_base = data.get("playlist_base")
                 if isinstance(saved_playlist, list):
-                    restored = [path for path in saved_playlist if isinstance(path, str) and path in library_paths]
-                    if restored and filepath in restored:
+                    restored = [p for p in (_restore_path(path) for path in saved_playlist) if p]
+                    target = _restore_path(filepath)
+                    if restored and target in restored:
                         playlist = restored
                         if isinstance(saved_base, list):
-                            playlist_base = [path for path in saved_base if isinstance(path, str) and path in library_paths]
+                            playlist_base = [p for p in (_restore_path(path) for path in saved_base) if p]
                         if not playlist_base:
                             playlist_base = list(restored)
-                        is_shuffle = bool(data.get("is_shuffle", False))
-                        current_track_idx = playlist.index(filepath)
+                        current_track_idx = playlist.index(target)
                         return
                 # Older resume files saved only the track path. If that track is
                 # favorited, use the favorite list as the best available context.
-                if filepath in favorites_list:
+                target = _restore_path(filepath)
+                if target and target in favorites_list:
                     restored_favorites = [path for path in favorites_list if path in library_paths]
-                    if filepath in restored_favorites:
+                    if target in restored_favorites:
                         playlist = list(restored_favorites)
                         playlist_base = list(restored_favorites)
-                        current_track_idx = playlist.index(filepath)
+                        current_track_idx = playlist.index(target)
                         print("Resume restored using favorites playlist (legacy state)")
                         return
-                if filepath and filepath in playlist:
-                    current_track_idx = playlist.index(filepath)
+                if target and target in playlist:
+                    current_track_idx = playlist.index(target)
                     playlist_base = list(playlist)
         except Exception:
             pass
@@ -933,6 +997,9 @@ last_user_action_time = time.time()
 cursor_idx = 0
 scroll_offset = 0
 menu_items = []
+# menu_entriesはmenu_itemsと同じ長さで、各項目の操作ID(id)と付随データ(data)を
+# 持つ。選択処理は表示ラベルではなくidで分岐するため、文言変更に依存しない。
+menu_entries = []
 
 bt_paired_devices = []
 bt_paired_devices_loading = False
@@ -946,6 +1013,7 @@ wifi_menu_loading = False
 wifi_menu_loading_since = 0.0
 wifi_menu_load_error = False
 wifi_menu_load_generation = 0
+wifi_connect_in_progress = False
 status_message = ""
 if audio_output_lost:
     status_message = "USB DAC待機中" if audio_output_mode == "USBOTG" else "BT接続待機中"
@@ -1413,24 +1481,6 @@ def wait_for_bluealsa_pcm(mac, timeout=10.0):
             return True
         time.sleep(0.5)
     return False
-
-
-def write_text_atomically(path, content):
-    """設定ファイルを一時ファイル経由で安全に置き換える。"""
-    temp_path = f"{path}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as file:
-            file.write(content)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
-        raise
 
 
 def is_bt_connected(mac):
@@ -2358,8 +2408,7 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
             audio_ok = init_usb_otg_audio(attempts=4, delay=1.0)
         else:
             try:
-                with open(asoundrc_path, "w", encoding="utf-8") as file:
-                    file.write(build_pwm_asoundrc())
+                write_text_atomically(asoundrc_path, build_pwm_asoundrc())
             except Exception as e:
                 print(f"asoundrc write error: {e}")
             audio_ok = safe_init_audio()
@@ -2758,8 +2807,14 @@ def get_saved_wifi_ssids():
     return [entry["ssid"] for entry in get_saved_wifi_connections()]
 
 def connect_to_wifi(target):
+    """保存済みWi-Fiへ接続する。呼び出し元(GPIOハンドラ)はstate_lockを保持している。"""
+    global wifi_connect_in_progress
+    if wifi_connect_in_progress:
+        return
+    wifi_connect_in_progress = True
+
     def _do_connect():
-        global status_message
+        global status_message, wifi_connect_in_progress
         target_ssid = ""
         target_nmcli_id = None
         target_wpa_id = None
@@ -2836,6 +2891,7 @@ def connect_to_wifi(target):
         request_display_update(is_full_refresh=False)
         with state_lock:
             should_refresh_menu = current_screen == "MENU_WIFI"
+            wifi_connect_in_progress = False
         if should_refresh_menu:
             refresh_wifi_menu(reason="connect-complete")
 
@@ -3037,99 +3093,103 @@ def get_bt_scanned_devices_snapshot():
     return list(bt_scanned_devices)
 
 def update_menu_items(reset_cursor=True):
-    global menu_items, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
+    global menu_items, menu_entries, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
     sync_favorites()
     if reset_cursor:
         cursor_idx = 0
         scroll_offset = 0
     library_menu_entries = []
 
+    # メニューは表示ラベル(label)と操作ID(id)・付随データ(data)の組で構築する。
+    # 選択処理はidで分岐するため、表示文言の変更や他言語化の影響を受けない。
+    entries = []
+
+    def add(label, action_id, data=None):
+        entries.append({"label": label, "id": action_id, "data": data})
+
     if current_screen == "MENU_TOP":
         pct, _ = get_battery_info()
-        items = ["アルバム"]
+        add("アルバム", "open_albums")
         if is_clock_unlocked:
-            items.append("時計画面")
-        items.extend([
-            "再生設定",
-            "接続設定",
-            "システム設定",
-            f"バッテリー: {pct}"
-        ])
-        menu_items = items
+            add("時計画面", "open_cat_clock")
+        add("再生設定", "open_play_settings")
+        add("接続設定", "open_conn")
+        add("システム設定", "open_sys")
+        add(f"バッテリー: {pct}", "refresh_battery")
 
     elif current_screen == "MENU_PLAY_SETTINGS":
         rep_labels = ["OFF", "ONE", "ALL"]
-        items = [
-            "../ (戻る)",
-            f"シャッフル: {'ON' if is_shuffle else 'OFF'}",
-            f"リピート: {rep_labels[repeat_mode]}",
-            "スリープタイマー"
-        ]
+        add("../ (戻る)", "back", ("MENU_TOP", None))
+        add(f"シャッフル: {'ON' if is_shuffle else 'OFF'}", "toggle_shuffle")
+        add(f"リピート: {rep_labels[repeat_mode]}", "toggle_repeat")
+        add("スリープタイマー", "open_sleep")
         if is_eq_unlocked:
-            items.append("EQ設定")
-        menu_items = items
+            add("EQ設定", "open_eq")
 
     elif current_screen == "MENU_SLEEP":
-        menu_items = [
-            "../ (戻る)",
-            f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}",
-            f"15分 {'<--' if sleep_timer_minutes == 15 else ''}",
-            f"30分 {'<--' if sleep_timer_minutes == 30 else ''}",
-            f"60分 {'<--' if sleep_timer_minutes == 60 else ''}"
-        ]
+        add("../ (戻る)", "back", ("MENU_PLAY_SETTINGS", None))
+        add(f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}", "set_sleep", 0)
+        add(f"15分 {'<--' if sleep_timer_minutes == 15 else ''}", "set_sleep", 15)
+        add(f"30分 {'<--' if sleep_timer_minutes == 30 else ''}", "set_sleep", 30)
+        add(f"60分 {'<--' if sleep_timer_minutes == 60 else ''}", "set_sleep", 60)
 
     elif current_screen == "MENU_FAVS":
-        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in favorites_list]
+        # 削除済みファイルは履歴と同様に表示から除外する(登録自体は残す)。
+        available_favs = [path for path in favorites_list if os.path.isfile(path)]
+        add("../ (戻る)", "back", ("MENU_ALBUMS", None))
+        for path in available_favs:
+            add(os.path.splitext(os.path.basename(path))[0], "play_fav", (list(available_favs), path))
 
     elif current_screen == "MENU_HISTORY":
         history_paths = get_available_playback_history()
-        menu_items = ["../ (戻る)"] + [os.path.splitext(os.path.basename(p))[0] for p in history_paths]
+        add("../ (戻る)", "back", ("MENU_ALBUMS", None))
+        for path in history_paths:
+            add(os.path.splitext(os.path.basename(path))[0], "play_history", (list(history_paths), path))
 
     elif current_screen == "MENU_CONN":
-        menu_items = [
-            "../ (戻る)",
-            "出力先設定",
-            "Wi-Fi設定",
-            "Bluetooth設定",
-            f"APモード: {'ON' if get_ap_status() else 'OFF'}"
-        ]
+        add("../ (戻る)", "back", ("MENU_TOP", None))
+        add("出力先設定", "open_output")
+        add("Wi-Fi設定", "open_wifi")
+        add("Bluetooth設定", "open_bt")
+        add(f"APモード: {'ON' if get_ap_status() else 'OFF'}", "ap_toggle")
+
     elif current_screen == "MENU_OUTPUT":
-        menu_items = [
-            "../ (戻る)",
-            f"現在のモード: [{audio_output_mode}]",
-            "PWMに変更",
-            "BTに変更",
-            "USBに変更",
-        ]
+        add("../ (戻る)", "back", ("MENU_CONN", None))
+        add(f"現在のモード: [{audio_output_mode}]", "none")
+        add("PWMに変更", "output_pwm")
+        add("BTに変更", "output_bt")
+        add("USBに変更", "output_usb")
+
     elif current_screen == "MENU_WIFI":
-        items = ["../ (戻る)", f"Wi-Fi機能: {'ON' if wifi_menu_enabled else 'OFF'}"]
+        add("../ (戻る)", "back", ("MENU_CONN", None))
+        add(f"Wi-Fi機能: {'ON' if wifi_menu_enabled else 'OFF'}", "wifi_rfkill")
         if wifi_menu_enabled:
             if saved_wifi_connections:
-                for entry in saved_wifi_connections:
-                    ssid = entry["ssid"]
+                for wifi_entry in saved_wifi_connections:
+                    ssid = wifi_entry["ssid"]
                     connected_label = " (接続済)" if wifi_menu_current_ssid and ssid == wifi_menu_current_ssid else ""
-                    items.append(f"接続: {ssid}{connected_label}")
+                    add(f"接続: {ssid}{connected_label}", "wifi_connect", dict(wifi_entry))
             elif wifi_menu_loading:
-                items.append("(読み込み中...)")
+                add("(読み込み中...)", "none")
             elif wifi_menu_load_error:
-                items.append("(読み込み失敗: 戻って再試行)")
+                add("(読み込み失敗: 戻って再試行)", "none")
             else:
-                items.append("(記憶されたWi-Fiなし)")
+                add("(記憶されたWi-Fiなし)", "none")
         else:
-            items.append("(Wi-Fi OFF中)")
-        menu_items = items
+            add("(Wi-Fi OFF中)", "none")
 
     elif current_screen == "MENU_BT":
         _, bt_on = get_rfkill_status()
-        items = ["../ (戻る)", f"Bluetooth機能: {'ON' if bt_on else 'OFF'}"]
+        add("../ (戻る)", "back", ("MENU_CONN", None))
+        add(f"Bluetooth機能: {'ON' if bt_on else 'OFF'}", "bt_rfkill")
         if bt_on:
-            items.extend(["登録済みデバイス", "新規デバイスの検索"])
+            add("登録済みデバイス", "open_bt_paired")
+            add("新規デバイスの検索", "open_bt_scan")
         else:
-            items.append("(Bluetooth OFF中)")
-        menu_items = items
+            add("(Bluetooth OFF中)", "none")
 
     elif current_screen == "MENU_BT_PAIRED":
-        items = ["../ (戻る)"]
+        add("../ (戻る)", "back", ("MENU_BT", None))
         if bt_paired_devices:
             name_counts = {}
             for _, name in bt_paired_devices:
@@ -3137,51 +3197,72 @@ def update_menu_items(reset_cursor=True):
             for mac, name in bt_paired_devices:
                 display_name = format_bt_menu_name(name, mac, include_suffix=name_counts.get(name, 0) > 1)
                 connected_label = " (接続済)" if mac in bt_connected_macs else ""
-                items.append(f"接続: {display_name}{connected_label}")
+                add(f"接続: {display_name}{connected_label}", "bt_connect", (mac, name))
         elif bt_paired_devices_loading:
-            items.append("(読み込み中...)")
+            add("(読み込み中...)", "none")
         else:
-            items.append("(登録済み機器なし)")
-        menu_items = items
+            add("(登録済み機器なし)", "none")
 
     elif current_screen == "MENU_BT_SCAN":
-        items = ["../ (戻る)", "検索開始"]
+        add("../ (戻る)", "back", ("MENU_BT", None))
+        add("検索開始", "bt_scan_start")
         scanned_snapshot = get_bt_scanned_devices_snapshot()
         name_counts = {}
         for _, name in scanned_snapshot:
             name_counts[name] = name_counts.get(name, 0) + 1
         for mac, name in scanned_snapshot:
-            items.append(f"ペアリング: {format_bt_menu_name(name, mac, include_suffix=name_counts.get(name, 0) > 1)}")
-        menu_items = items
+            add(f"ペアリング: {format_bt_menu_name(name, mac, include_suffix=name_counts.get(name, 0) > 1)}", "bt_connect", (mac, name))
 
     elif current_screen == "MENU_SYS":
-        items = [
-            "../ (戻る)",
-            "曲ライブラリ再読み込み",
-            "GitHubから更新",
-            "アプリ再起動",
-            "ライセンス表示",
-            f"IP: {menu_ip_address}",
-            f"BTコーデック: {menu_bt_codec}",
-            "RAM/ROM使用量",
-            "CPU使用率/温度",
-            "再起動",
-            "シャットダウン"
-        ]
+        add("../ (戻る)", "back", ("MENU_TOP", None))
+        add("曲ライブラリ再読み込み", "lib_reload")
+        add("GitHubから更新", "github_update")
+        add("アプリ再起動", "app_restart")
+        add("ライセンス表示", "license")
         if is_clock_unlocked or is_eq_unlocked:
-            items.insert(5, "隠し機能を削除")
-        menu_items = items
+            add("隠し機能を削除", "remove_hidden")
+        add(f"IP: {menu_ip_address}", "none")
+        add(f"BTコーデック: {menu_bt_codec}", "none")
+        add("RAM/ROM使用量", "open_resource_ram")
+        add("CPU使用率/温度", "open_resource_cpu")
+        add("再起動", "sys_reboot")
+        add("シャットダウン", "sys_shutdown")
+
     elif current_screen in RESOURCE_SCREENS:
-        menu_items = ["../ (戻る)"]
+        add("../ (戻る)", "back", ("MENU_SYS", None))
+
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
-        menu_items = ["../ (戻る)", "[★ お気に入り]", "[再生履歴]"] + [entry["display"] for entry in library_menu_entries]
+        add("../ (戻る)", "back", ("MENU_TOP", None))
+        add("[★ お気に入り]", "open_favs")
+        add("[再生履歴]", "open_history")
+        for lib_entry in library_menu_entries:
+            if lib_entry["type"] == "dir":
+                add(lib_entry["display"], "album_dir", lib_entry["rel_dir"])
+            elif lib_entry["type"] == "track":
+                add(lib_entry["display"], "play_track", lib_entry["path"])
 
     elif current_screen == "MENU_TRACKS":
         browsing_dir = normalize_rel_dir(selected_album)
         selected_album = browsing_dir
         library_menu_entries = get_library_entries(browsing_dir, include_folder_play=True)
-        menu_items = ["../ (戻る)"] + [entry["display"] for entry in library_menu_entries]
+        parent_dir = normalize_rel_dir(os.path.dirname(browsing_dir))
+        if browsing_dir == ROOT_REL_DIR:
+            add("../ (戻る)", "back", ("MENU_TOP", None))
+        elif parent_dir == ROOT_REL_DIR:
+            add("../ (戻る)", "back", ("MENU_ALBUMS", None))
+        else:
+            add("../ (戻る)", "back", ("MENU_TRACKS", parent_dir))
+        for lib_entry in library_menu_entries:
+            if lib_entry["type"] == "dir":
+                add(lib_entry["display"], "album_dir", lib_entry["rel_dir"])
+            elif lib_entry["type"] == "play_folder":
+                add(lib_entry["display"], "play_folder", lib_entry["rel_dir"])
+            elif lib_entry["type"] == "track":
+                add(lib_entry["display"], "play_track", lib_entry["path"])
+
+    menu_entries = entries
+    menu_items = [entry["label"] for entry in entries]
 
 def reset_inactivity_timer():
     global last_user_action_time
@@ -3526,11 +3607,13 @@ def toggle_shuffle():
     playlist = random.sample(playlist_base, len(playlist_base)) if is_shuffle else list(playlist_base)
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
+    save_settings()
     save_resume_state()
 
 def toggle_repeat():
     global repeat_mode
     repeat_mode = (repeat_mode + 1) % 3
+    save_settings()
 
 def set_sleep_timer(mins):
     global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
@@ -3569,13 +3652,9 @@ def check_easter_egg_trigger():
     return False
 
 # --- 9. ボタンイベントハンドラ ---
-def parse_clean_name(selected_str, prefix):
-    raw = selected_str.replace(prefix, "").strip()
-    return raw.replace(" (接続済)", "").strip()
-
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
-    global current_screen, selected_album, current_track_idx, playlist, status_message, eq_cursor
+    global current_screen, selected_album, status_message, eq_cursor
     global is_clock_unlocked, is_eq_unlocked
     global bt_paired_devices, bt_paired_devices_loading
     with state_lock:
@@ -3598,268 +3677,196 @@ def on_btn_menu_or_select():
             current_screen = "MENU_TOP"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
-        else:
-            if cursor_idx < len(menu_items):
-                selected = menu_items[cursor_idx]
+            return
 
-                if selected.startswith("../"):
-                    if current_screen == "MENU_TRACKS":
-                        browsing_dir = normalize_rel_dir(selected_album)
-                        if browsing_dir == ROOT_REL_DIR:
-                            current_screen = "MENU_TOP"
-                            selected_album = None
-                        else:
-                            parent_dir = normalize_rel_dir(os.path.dirname(browsing_dir))
-                            if parent_dir == ROOT_REL_DIR:
-                                current_screen = "MENU_ALBUMS"
-                                selected_album = None
-                            else:
-                                selected_album = parent_dir
-                                current_screen = "MENU_TRACKS"
-                    elif current_screen in ["MENU_CONN", "MENU_ALBUMS", "MENU_SYS", "MENU_PLAY_SETTINGS"]:
-                        current_screen = "MENU_TOP"
-                    elif current_screen == "MENU_OUTPUT":
-                        current_screen = "MENU_CONN"
-                    elif current_screen in RESOURCE_SCREENS: current_screen = "MENU_SYS"
-                    elif current_screen in ["MENU_WIFI", "MENU_BT"]: current_screen = "MENU_CONN"
-                    elif current_screen in ["MENU_BT_PAIRED", "MENU_BT_SCAN"]: current_screen = "MENU_BT"
-                    elif current_screen in ["MENU_FAVS", "MENU_HISTORY"]: current_screen = "MENU_ALBUMS"
-                    elif current_screen == "MENU_SLEEP": current_screen = "MENU_PLAY_SETTINGS"
-                    else: current_screen = "MENU_TOP"
-                    update_menu_items(reset_cursor=True)
-                    request_display_update(is_full_refresh=True)
-                    return
+        if cursor_idx >= len(menu_entries):
+            return
+        entry = menu_entries[cursor_idx]
+        entry_id = entry["id"]
+        entry_data = entry["data"]
 
-                if current_screen == "MENU_TOP":
-                    if selected == "アルバム":
-                        selected_album = None
-                        current_screen = "MENU_ALBUMS"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "時計画面":
-                        current_screen = "CAT_CLOCK"
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "再生設定":
-                        current_screen = "MENU_PLAY_SETTINGS"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "接続設定":
-                        current_screen = "MENU_CONN"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "システム設定":
-                        current_screen = "MENU_SYS"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected.startswith("バッテリー:"):
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
+        if entry_id == "back":
+            # data = (遷移先画面, 遷移先で選択するアルバムディレクトリ)
+            target_screen, target_album = entry_data
+            selected_album = target_album
+            current_screen = target_screen
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
 
-                elif current_screen == "MENU_PLAY_SETTINGS":
-                    if selected.startswith("シャッフル:"):
-                        toggle_shuffle()
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-                    elif selected.startswith("リピート:"):
-                        toggle_repeat()
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-                    elif selected == "スリープタイマー":
-                        current_screen = "MENU_SLEEP"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "EQ設定":
-                        current_screen = "CAT_EQ"
-                        eq_cursor = 0
-                        request_display_update(is_full_refresh=True)
+        elif entry_id == "open_albums":
+            selected_album = None
+            current_screen = "MENU_ALBUMS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_cat_clock":
+            current_screen = "CAT_CLOCK"
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_play_settings":
+            current_screen = "MENU_PLAY_SETTINGS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_conn":
+            current_screen = "MENU_CONN"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_sys":
+            current_screen = "MENU_SYS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_output":
+            current_screen = "MENU_OUTPUT"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_wifi":
+            current_screen = "MENU_WIFI"
+            refresh_wifi_menu(state_lock_held=True, reason="open-menu")
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_bt":
+            current_screen = "MENU_BT"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_bt_paired":
+            current_screen = "MENU_BT_PAIRED"
+            bt_paired_devices_loading = True
+            bt_paired_devices = []
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+            refresh_bt_paired_devices()
+        elif entry_id == "open_bt_scan":
+            current_screen = "MENU_BT_SCAN"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_favs":
+            current_screen = "MENU_FAVS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_history":
+            current_screen = "MENU_HISTORY"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_sleep":
+            current_screen = "MENU_SLEEP"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_eq":
+            current_screen = "CAT_EQ"
+            eq_cursor = 0
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_resource_ram":
+            current_screen = "MENU_SYS_RAM_ROM"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_resource_cpu":
+            current_screen = "MENU_SYS_CPU_TEMP"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
 
-                elif current_screen == "MENU_SLEEP":
-                    if selected.startswith("タイマーOFF"): set_sleep_timer(0)
-                    elif selected.startswith("15分"): set_sleep_timer(15)
-                    elif selected.startswith("30分"): set_sleep_timer(30)
-                    elif selected.startswith("60分"): set_sleep_timer(60)
-                    update_menu_items(reset_cursor=False)
+        elif entry_id == "refresh_battery":
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "toggle_shuffle":
+            toggle_shuffle()
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "toggle_repeat":
+            toggle_repeat()
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "set_sleep":
+            set_sleep_timer(entry_data)
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+
+        elif entry_id == "play_fav":
+            fav_playlist, fav_path = entry_data
+            set_playback_playlist(fav_playlist, selected_path=fav_path)
+            play_current_track(full_refresh=True)
+            current_screen = "PLAY"
+        elif entry_id == "play_history":
+            history_playlist, history_path = entry_data
+            set_playback_playlist(history_playlist, selected_path=history_path)
+            play_current_track(full_refresh=True)
+            current_screen = "PLAY"
+        elif entry_id == "play_folder":
+            subtree_tracks = get_tracks_in_subtree(entry_data)
+            if subtree_tracks:
+                set_playback_playlist(subtree_tracks, start_index=0)
+                play_current_track(full_refresh=True)
+                current_screen = "PLAY"
+        elif entry_id == "play_track":
+            browsing_dir = normalize_rel_dir(selected_album)
+            direct_tracks = get_direct_tracks_in_dir(browsing_dir)
+            if entry_data in direct_tracks:
+                set_playback_playlist(direct_tracks, selected_path=entry_data)
+                play_current_track(full_refresh=True)
+                current_screen = "PLAY"
+        elif entry_id == "album_dir":
+            selected_album = entry_data
+            current_screen = "MENU_TRACKS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+
+        elif entry_id == "ap_toggle":
+            toggle_ap_mode(state_lock_held=True)
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "output_pwm":
+            set_audio_output("PWM", state_lock_held=True)
+        elif entry_id == "output_bt":
+            set_audio_output("BT", connected_bt_mac, state_lock_held=True)
+        elif entry_id == "output_usb":
+            set_audio_output("USBOTG", state_lock_held=True)
+        elif entry_id == "wifi_rfkill":
+            toggle_rfkill("wifi")
+            refresh_wifi_menu(state_lock_held=True, reason="radio-toggle")
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "wifi_connect":
+            connect_to_wifi(entry_data)
+        elif entry_id == "bt_rfkill":
+            toggle_rfkill("bt")
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "bt_connect":
+            connect_mac, connect_name = entry_data
+            start_bt_connection(connect_mac, connect_name, state_lock_held=True)
+        elif entry_id == "bt_scan_start":
+            trigger_bt_scan(state_lock_held=True)
+
+        elif entry_id == "lib_reload":
+            reload_music_library()
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "github_update":
+            start_github_update()
+        elif entry_id == "remove_hidden":
+            is_clock_unlocked = False
+            is_eq_unlocked = False
+            save_settings()
+            current_screen = "MENU_TOP"
+            update_menu_items(reset_cursor=True)
+            status_message = "隠し機能を削除しました"
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "license":
+            if not check_easter_egg_trigger():
+                status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.2 {get_git_short_hash()}]"
+                request_display_update(is_full_refresh=False)
+                def _clear_status():
+                    time.sleep(3.0)
+                    global status_message
+                    status_message = ""
                     request_display_update(is_full_refresh=False)
-
-                elif current_screen == "MENU_FAVS":
-                    chosen_idx = cursor_idx - 1
-                    if 0 <= chosen_idx < len(favorites_list):
-                        set_playback_playlist(favorites_list, selected_path=favorites_list[chosen_idx])
-                        play_current_track(full_refresh=True)
-                        current_screen = "PLAY"
-
-                elif current_screen == "MENU_HISTORY":
-                    history_paths = get_available_playback_history()
-                    chosen_idx = cursor_idx - 1
-                    if 0 <= chosen_idx < len(history_paths):
-                        set_playback_playlist(history_paths, selected_path=history_paths[chosen_idx])
-                        play_current_track(full_refresh=True)
-                        current_screen = "PLAY"
-
-                elif current_screen == "MENU_CONN":
-                    if selected == "出力先設定":
-                        current_screen = "MENU_OUTPUT"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "Wi-Fi設定":
-                        current_screen = "MENU_WIFI"
-                        refresh_wifi_menu(state_lock_held=True, reason="open-menu")
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "Bluetooth設定":
-                        current_screen = "MENU_BT"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected.startswith("APモード:"):
-                        toggle_ap_mode(state_lock_held=True)
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-
-                elif current_screen == "MENU_OUTPUT":
-                    if selected == "PWMに変更":
-                        set_audio_output("PWM", state_lock_held=True)
-                    elif selected == "BTに変更":
-                        set_audio_output("BT", connected_bt_mac, state_lock_held=True)
-                    elif selected == "USBに変更":
-                        set_audio_output("USBOTG", state_lock_held=True)
-
-                elif current_screen == "MENU_WIFI":
-                    if selected.startswith("Wi-Fi機能:"):
-                        toggle_rfkill("wifi")
-                        refresh_wifi_menu(state_lock_held=True, reason="radio-toggle")
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-                    elif selected.startswith("接続:"):
-                        chosen_idx = cursor_idx - 2
-                        if 0 <= chosen_idx < len(saved_wifi_connections):
-                            connect_to_wifi(dict(saved_wifi_connections[chosen_idx]))
-
-                elif current_screen == "MENU_BT":
-                    if selected.startswith("Bluetooth機能:"):
-                        toggle_rfkill("bt")
-                        update_menu_items(reset_cursor=False)
-                        request_display_update(is_full_refresh=False)
-                    elif selected == "登録済みデバイス":
-                        current_screen = "MENU_BT_PAIRED"
-                        bt_paired_devices_loading = True
-                        bt_paired_devices = []
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                        refresh_bt_paired_devices()
-                    elif selected == "新規デバイスの検索":
-                        current_screen = "MENU_BT_SCAN"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-
-                elif current_screen == "MENU_BT_PAIRED":
-                    if selected.startswith("接続:"):
-                        chosen_idx = cursor_idx - 1
-                        if 0 <= chosen_idx < len(bt_paired_devices):
-                            mac, name = bt_paired_devices[chosen_idx]
-                            start_bt_connection(mac, name, state_lock_held=True)
-
-                elif current_screen == "MENU_BT_SCAN":
-                    if selected == "検索開始":
-                        trigger_bt_scan(state_lock_held=True)
-                    elif selected.startswith("ペアリング:"):
-                        chosen_idx = cursor_idx - 2
-                        if 0 <= chosen_idx < len(bt_scanned_devices):
-                            mac, name = bt_scanned_devices[chosen_idx]
-                            start_bt_connection(mac, name, state_lock_held=True)
-
-                elif current_screen == "MENU_ALBUMS":
-                    if selected == "[★ お気に入り]":
-                        current_screen = "MENU_FAVS"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    elif selected == "[再生履歴]":
-                        current_screen = "MENU_HISTORY"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-                    else:
-                        chosen_idx = cursor_idx - 3  # 0: 戻る, 1: お気に入り, 2: 再生履歴
-                        if 0 <= chosen_idx < len(library_menu_entries):
-                            chosen_entry = library_menu_entries[chosen_idx]
-                            if chosen_entry["type"] == "dir":
-                                selected_album = chosen_entry["rel_dir"]
-                                current_screen = "MENU_TRACKS"
-                                update_menu_items(reset_cursor=True)
-                                request_display_update(is_full_refresh=True)
-                            elif chosen_entry["type"] == "track":
-                                direct_tracks = get_direct_tracks_in_dir(ROOT_REL_DIR)
-                                if chosen_entry["path"] in direct_tracks:
-                                    set_playback_playlist(direct_tracks, selected_path=chosen_entry["path"])
-                                    play_current_track(full_refresh=True)
-                                    current_screen = "PLAY"
-
-                elif current_screen == "MENU_TRACKS":
-                    chosen_idx = cursor_idx - 1
-                    if 0 <= chosen_idx < len(library_menu_entries):
-                        chosen_entry = library_menu_entries[chosen_idx]
-                        if chosen_entry["type"] == "dir":
-                            selected_album = chosen_entry["rel_dir"]
-                            update_menu_items(reset_cursor=True)
-                            request_display_update(is_full_refresh=True)
-                        elif chosen_entry["type"] == "play_folder":
-                            subtree_tracks = get_tracks_in_subtree(chosen_entry["rel_dir"])
-                            if subtree_tracks:
-                                set_playback_playlist(subtree_tracks, start_index=0)
-                                play_current_track(full_refresh=True)
-                                current_screen = "PLAY"
-                        elif chosen_entry["type"] == "track":
-                            browsing_dir = normalize_rel_dir(selected_album)
-                            direct_tracks = get_direct_tracks_in_dir(browsing_dir)
-                            if chosen_entry["path"] in direct_tracks:
-                                set_playback_playlist(direct_tracks, selected_path=chosen_entry["path"])
-                                play_current_track(full_refresh=True)
-                                current_screen = "PLAY"
-
-                elif current_screen == "MENU_SYS":
-                    if selected == "曲ライブラリ再読み込み":
-                        reload_music_library()
-                        request_display_update(is_full_refresh=False)
-
-                    elif selected == "RAM/ROM使用量":
-                        current_screen = "MENU_SYS_RAM_ROM"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-
-                    elif selected == "CPU使用率/温度":
-                        current_screen = "MENU_SYS_CPU_TEMP"
-                        update_menu_items(reset_cursor=True)
-                        request_display_update(is_full_refresh=True)
-
-                    elif selected == "GitHubから更新":
-                        start_github_update()
-
-                    elif selected == "隠し機能を削除":
-                        is_clock_unlocked = False
-                        is_eq_unlocked = False
-                        save_settings()
-                        current_screen = "MENU_TOP"
-                        update_menu_items(reset_cursor=True)
-                        status_message = "隠し機能を削除しました"
-                        request_display_update(is_full_refresh=True)
-
-                    elif selected == "ライセンス表示":
-                        if not check_easter_egg_trigger():
-                            status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.2 {get_git_short_hash()}]"
-                            request_display_update(is_full_refresh=False)
-                            def _clear_status():
-                                time.sleep(3.0)
-                                global status_message
-                                status_message = ""
-                                request_display_update(is_full_refresh=False)
-                            threading.Thread(target=_clear_status, daemon=True).start()
-                    elif selected == "アプリ再起動":
-                        clean_shutdown_display("Restarting...")
-                        subprocess.run(["sudo", "systemctl", "restart", "dap.service"])
-                    elif selected == "再起動":
-                        clean_shutdown_display("Rebooting...")
-                        subprocess.run(["sudo", "reboot"])
-                    elif selected == "シャットダウン":
-                        clean_shutdown_display("Power Off...")
-                        subprocess.run(["sudo", "shutdown", "-h", "now"])
+                threading.Thread(target=_clear_status, daemon=True).start()
+        elif entry_id == "app_restart":
+            clean_shutdown_display("Restarting...")
+            subprocess.run(["sudo", "systemctl", "restart", "dap.service"])
+        elif entry_id == "sys_reboot":
+            clean_shutdown_display("Rebooting...")
+            subprocess.run(["sudo", "reboot"])
+        elif entry_id == "sys_shutdown":
+            clean_shutdown_display("Power Off...")
+            subprocess.run(["sudo", "shutdown", "-h", "now"])
+        # "none" や未知のIDは選択しても何もしない
 
 def on_btn_play_or_back():
     if not debounce("btn_play_back"): return
@@ -3919,7 +3926,7 @@ def on_btn_up_action():
             if eq_cursor < 3:
                 band = eq_bands[eq_cursor]
                 eq_values[band] = min(6, eq_values[band] + 1)
-                save_settings()
+                schedule_settings_save()
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
@@ -3941,7 +3948,7 @@ def on_btn_down_action():
             if eq_cursor < 3:
                 band = eq_bands[eq_cursor]
                 eq_values[band] = max(-6, eq_values[band] - 1)
-                save_settings()
+                schedule_settings_save()
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
@@ -4077,9 +4084,13 @@ try:
         time.sleep(0.2)
         if shutdown_exit_requested:
             # SIGTERM時に描画中だった場合は描画完了後にここで終了する
+            flush_pending_settings_save()
             sys.exit(0)
         now = time.time()
         sync_favorites()
+        # 予約済みのsettings.json書き込み(delay後)をここで確実に実行する。
+        if _settings_save_dirty and now >= _settings_save_due:
+            flush_pending_settings_save()
 
         # 0%になっても再生中の曲は最後まで再生してから電源を切る。
         battery_percent = get_battery_percent()
