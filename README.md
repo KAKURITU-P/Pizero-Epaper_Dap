@@ -59,6 +59,12 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 ```text
 .
 ├── dap_daemon.py       # DAP メイン制御デーモン (Pygame / GPIO / EPD)
+├── battery_utils.py    # バッテリー状態ファイルの読み取り
+├── font_utils.py       # フォント検出と読み込み
+├── icon_utils.py       # スプライトシートからのアイコン・船画像の切り出し
+├── render_utils.py     # 表示用テキスト整形(幅合わせ省略・時間・サイズ)
+├── version_utils.py    # gitタグから表示用バージョンを取得
+├── bluealsa_utils.py   # BlueALSA / ALSA 設定生成ユーティリティ
 ├── web_admin_server.py # Web管理画面 API
 ├── web_admin/          # Web管理画面
 ├── setup.sh            # 初回セットアップ（依存関係・ドライバー・systemd）
@@ -66,6 +72,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 ├── tools/              # セットアップ・保守用スクリプト
 ├── docs/               # Bluetooth AAC 等の追加手順
 ├── waveshare_epd/      # セットアップ時に取得する Waveshare ドライバー
+├── tests/              # ユーティリティの単体テスト
 ├── stereo_test.py      # L/R ステレオ位相・チャンネル確認用ツール
 ├── gpio_test.py        # GPIO ボタン入力確認用テストスクリプト
 ├── gpio_check.py       # GPIO ピン状態チェックツール

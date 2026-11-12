@@ -8,7 +8,6 @@ except Exception:
     pass
 import os
 import time
-import glob
 import re
 import socket
 import random
@@ -24,7 +23,7 @@ import shutil
 import tempfile
 import pygame
 from collections import deque
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 import waveshare_epd.epd2in13_V4 as epd2in13
 from gpiozero import Button
 try:
@@ -66,58 +65,18 @@ for _path in (BASE_DIR, "/home/pi/dap"):
     if _path and _path not in sys.path:
         sys.path.append(_path)
 
-def get_git_short_hash():
-    """Return the running checkout's short commit ID, if Git metadata exists."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", BASE_DIR, "rev-parse", "--short=7", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=True,
-        )
-        commit = result.stdout.strip()
-        if re.fullmatch(r"[0-9a-fA-F]{7,12}", commit):
-            return commit
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "local"
+from battery_utils import get_battery_info, get_battery_percent  # noqa: E402
+from font_utils import find_japanese_font, get_font  # noqa: E402
+from icon_utils import get_cropped_ship, load_playback_mode_icons  # noqa: E402
+from render_utils import (  # noqa: E402
+    format_ram_bytes,
+    format_size_bytes,
+    format_time_str,
+    truncate_by_width,
+)
+from version_utils import get_display_version  # noqa: E402
 
-# --- バッテリー情報取得関数 ---
-def get_battery_info():
-    """バッテリーの % と V を取得"""
-    pct_str = "--%"
-    volt_str = ""
-    try:
-        if os.path.exists("/tmp/battery_status"):
-            with open("/tmp/battery_status", "r") as f:
-                raw = f.read().strip()
-                if "/" in raw:
-                    parts = raw.split("/")
-                    v_raw = parts[0].strip()
-                    p_raw = parts[1].strip()
-                    
-                    volt_str = v_raw.upper().rstrip('V').strip()
-                    if volt_str and not volt_str.startswith("-"):
-                        volt_str = volt_str + "V"
-                    else:
-                        volt_str = ""
-                    pct_str = p_raw.strip()
-                else:
-                    pct_str = raw
-    except Exception:
-        pass
-    return pct_str, volt_str
-
-def get_battery_percent():
-    pct_str, _ = get_battery_info()
-    match = re.search(r"-?\d+(?:\.\d+)?", pct_str)
-    if not match:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
+SHIPS_PNG_PATH = os.path.join(BASE_DIR, "ships.png")
 
 # --- mutagen によるメタデータ取得 ---
 try:
@@ -416,110 +375,14 @@ signal.signal(signal.SIGTERM, handle_signal)
 signal.signal(signal.SIGINT, handle_signal)
 
 # --- 3. フォント設定 ---
-def find_japanese_font():
-    font_candidates = [
-        "/usr/share/fonts/truetype/bizud-gothic/BIZUDGothic-Regular.ttf",
-        "/usr/share/fonts/truetype/bizud-gothic/BIZUDPGothic-Regular.ttf",
-        "/usr/share/fonts/truetype/bizud-gothic/BIZUDGothic-Bold.ttf",
-        "/usr/share/fonts/truetype/takao-gothic/TakaoGothic.ttf",
-        "/usr/share/fonts/truetype/vlgothic/VL-Gothic-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf"
-    ]
-    for path in font_candidates:
-        if os.path.exists(path):
-            return path
-
-    bizud_fonts = glob.glob("/usr/share/fonts/**/bizud-gothic/*.ttf") + \
-                  glob.glob("/usr/share/fonts/**/bizud-gothic/*.otf")
-    if bizud_fonts:
-        return bizud_fonts[0]
-
-    found = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True) + \
-            glob.glob("/usr/share/fonts/**/*.otf", recursive=True) + \
-            glob.glob("/usr/share/fonts/**/*.ttc", recursive=True)
-    return found[0] if found else None
-
 FONT_PATH = find_japanese_font()
 
-def get_font(size):
-    if FONT_PATH:
-        try:
-            return ImageFont.truetype(FONT_PATH, size)
-        except Exception:
-            pass
-    return ImageFont.load_default()
+font_title  = get_font(FONT_PATH, 20)
+font_main   = get_font(FONT_PATH, 14)
+font_small  = get_font(FONT_PATH, 12)
+font_clock  = get_font(FONT_PATH, 30)
 
-font_title  = get_font(20)
-font_main   = get_font(14)
-font_small  = get_font(12)
-font_clock  = get_font(30)
-
-def load_playback_mode_icons():
-    """Load playback mode and audio output glyphs from the sprite sheet."""
-    try:
-        sheet = Image.open(os.path.join(BASE_DIR, "shuffle_repeat.png")).convert("1")
-        boxes = {}
-        if sheet.width < 55 or sheet.height < 36:
-            raise ValueError(f"sprite sheet is too small: {sheet.size}")
-
-        # The left column contains playback modes.  The middle column has PWM
-        # on the first row, then a 2x2 BT/codec sprite:
-        # BT | SBC
-        # AAC | other
-        # The right column has the USB OTG output icon.
-        boxes.update({
-            "shuffle": (1, 1, 18, 12),
-            "repeat_all": (1, 13, 18, 24),
-            "repeat_one": (1, 25, 18, 36),
-            "pwm": (19, 1, 36, 12),
-            "bt": (19, 13, 28, 24),
-            "sbc": (28, 13, 36, 24),
-            "aac": (19, 25, 28, 36),
-            "other": (28, 25, 36, 36),
-            "usb": (37, 1, 54, 12),
-        })
-
-        icons = {}
-        for name, box in boxes.items():
-            icon = sheet.crop(box)
-            icon_size = {
-                "shuffle": (17, 11),
-                "repeat_all": (17, 11),
-                "repeat_one": (17, 11),
-                "pwm": (17, 11),
-                "bt": (9, 11),
-                "sbc": (8, 11),
-                "aac": (8, 11),
-                "other": (8, 11),
-                "usb": (17, 11),
-            }[name]
-            if icon.size != icon_size:
-                icon = icon.resize(icon_size, Image.Resampling.NEAREST)
-            icons[name] = icon
-
-        for codec in ("aac", "sbc", "other"):
-            if "bt" in icons and codec in icons:
-                combined = Image.new("1", (17, 11), 1)
-                combined.paste(icons["bt"], (0, 0))
-                combined.paste(icons[codec], (9, 0))
-                icons[codec] = combined
-        if "pwm" not in icons:
-            fallback = Image.new("1", (17, 11), 1)
-            fallback_draw = ImageDraw.Draw(fallback)
-            fallback_draw.line(
-                [(1, 4), (5, 4), (5, 10), (8, 10), (8, 4), (12, 4),
-                 (12, 10), (15, 10), (15, 4), (19, 4)],
-                fill=0, width=1
-            )
-            icons.setdefault("pwm", fallback)
-
-        return icons
-    except (OSError, ValueError) as error:
-        print(f"再生モードアイコンを読み込めません: {error}")
-        return {}
-
-playback_mode_icons = load_playback_mode_icons()
+playback_mode_icons = load_playback_mode_icons(os.path.join(BASE_DIR, "shuffle_repeat.png"))
 
 # --- 4. 音楽ライブラリ & お気に入り & レジューム ---
 MUSIC_DIR = os.path.expanduser("~/music")
@@ -1094,29 +957,6 @@ apply_eq_settings()
 random_ships_cache = None
 last_cat_clock_minute = -1
 
-def truncate_by_width(text, font, max_px):
-    def get_text_width(t):
-        if hasattr(font, 'getlength'):
-            return font.getlength(t)
-        elif hasattr(font, 'getbbox'):
-            return font.getbbox(t)[2]
-        return len(t) * 8
-
-    if get_text_width(text) <= max_px:
-        return text
-
-    ellipsis = "…"
-    ellipsis_w = get_text_width(ellipsis)
-    target_w = max_px - ellipsis_w
-
-    truncated = ""
-    for char in text:
-        if get_text_width(truncated + char) > target_w:
-            break
-        truncated += char
-
-    return truncated + ellipsis
-
 def debounce(btn_name):
     global last_btn_times
     now = time.time()
@@ -1327,21 +1167,6 @@ def system_resource_monitor_thread():
             print(f"System monitor error: {error}")
         tick += 1
         time.sleep(1)
-
-def format_size_bytes(value):
-    amount = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if amount < 1024.0 or unit == "TB":
-            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
-        amount /= 1024.0
-    return f"{amount:.1f} TB"
-
-def format_ram_bytes(value, total):
-    """RAM平均の表示用。0.1MB単位だと5秒ごとに表示が変わり画面更新が増えるため、
-    1GB未満は整数MBで表示する(変化が目に見える程度のときだけ更新される)。"""
-    if total >= 1024 ** 3:
-        return format_size_bytes(value)
-    return f"{value / (1024 ** 2):.0f} MB"
 
 def render_system_resource_screen(image, draw, stats):
     width = image.width
@@ -1616,45 +1441,6 @@ def format_bt_menu_name(name, mac, include_suffix=False):
         return f"{base} [{mac[-5:]}]"
     return base
 
-def get_cropped_ship(ship_index, target_height):
-    path = "/home/pi/dap/ships.png"
-    if not os.path.exists(path):
-        return None, None
-
-    try:
-        img = Image.open(path).convert("RGBA")
-        crops = [
-            (30,  15, 480, 90),
-            (30, 100, 480, 175),
-            (30, 185, 480, 260),
-            (30, 270, 480, 345),
-            (30, 355, 480, 430),
-            (30, 440, 480, 505)
-        ]
-        if not (0 <= ship_index < len(crops)):
-            ship_index = 0
-
-        crop_box = crops[ship_index]
-        cropped = img.crop(crop_box)
-
-        bbox = cropped.getbbox()
-        if bbox:
-            cropped = cropped.crop(bbox)
-
-        aspect_ratio = cropped.width / float(cropped.height)
-        new_w = int(target_height * aspect_ratio)
-        resized = cropped.resize((new_w, target_height), Image.Resampling.LANCZOS)
-        resized = ImageOps.mirror(resized)
-
-        alpha = resized.getchannel("A")
-        black_shape = Image.eval(alpha, lambda p: 0 if p > 128 else 255).convert("1")
-        mask = alpha.point(lambda p: 255 if p > 128 else 0, mode="1")
-        
-        return black_shape, mask
-    except Exception as e:
-        print(f"Ship crop error ({ship_index}): {e}")
-        return None, None
-
 def render_cat_clock(image, draw, width, height):
     global random_ships_cache, last_cat_clock_minute
     
@@ -1681,7 +1467,7 @@ def render_cat_clock(image, draw, width, height):
 
     has_drawn = False
     for idx, target_h, pos_x in random_ships_cache:
-        ship_img, mask = get_cropped_ship(idx, target_h)
+        ship_img, mask = get_cropped_ship(SHIPS_PNG_PATH, idx, target_h)
         if ship_img and mask:
             pos_y = (sea_level - 1) - ship_img.height
             image.paste(ship_img, (pos_x, pos_y), mask)
@@ -2931,9 +2717,6 @@ def get_track_artist_info(filepath):
     folder_name = os.path.dirname(rel_path)
     return folder_name if folder_name else "不明なアーティスト"
 
-def format_time_str(seconds):
-    return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
-
 # --- Bluetooth 区分処理 ---
 def get_bt_paired_devices():
     global bt_connected_macs
@@ -3849,7 +3632,7 @@ def on_btn_menu_or_select():
             request_display_update(is_full_refresh=True)
         elif entry_id == "license":
             if not check_easter_egg_trigger():
-                status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V 1.1.2 {get_git_short_hash()}]"
+                status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V {get_display_version(BASE_DIR)}]"
                 request_display_update(is_full_refresh=False)
                 def _clear_status():
                     time.sleep(3.0)
