@@ -241,6 +241,16 @@
         favoriteOrderDirty = false;
         $("save-favorites").disabled = false;
         const orderList = $("favorite-order"); orderList.replaceChildren();
+        // 現在のDOM上の位置から▲▼の無効化を計算し直す。
+        // 矢印・ドラッグで並びが変わるたびに呼び、押せる方向を常に最新に保つ。
+        const refreshOrderButtons = () => {
+          const rows = [...orderList.querySelectorAll(".favorite-order-row")];
+          rows.forEach((r, i) => {
+            const buttons = r.querySelectorAll(".favorite-actions button");
+            if (buttons[0]) buttons[0].disabled = i === 0;
+            if (buttons[1]) buttons[1].disabled = i === rows.length - 1;
+          });
+        };
         if (!result.favorites.length) {
           orderList.innerHTML = '<div class="muted">お気に入り曲がありません。</div>';
         } else {
@@ -266,6 +276,7 @@
               else row.before(dragged);
               favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
               favoriteOrderDirty = true;
+              refreshOrderButtons();
               $("save-favorites").disabled = false;
               message("favorite-order-message", "並び替えを変更しました。保存してください。");
             });
@@ -278,28 +289,21 @@
               const button = document.createElement("button"); button.className = "secondary";
               button.textContent = label; button.title = direction === "up" ? "上へ移動" : "下へ移動";
               button.disabled = disabled;
-              button.onclick = async () => {
-                button.disabled = true;
-                try {
-                  await api("/api/favorites", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ path: track.path, move: direction })
-                  });
-                  const rows = [...orderList.querySelectorAll(".favorite-order-row")];
-                  const current = rows.find(item => item.dataset.path === track.path);
-                  const target = direction === "up" ? current?.previousElementSibling : current?.nextElementSibling;
-                  if (current && target) {
-                    if (direction === "up") target.before(current);
-                    else target.after(current);
-                    favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
-                    favoriteOrderDirty = true;
-                    message("favorite-order-message", "並び替えを変更しました。保存してください。");
-                  }
-                } catch (error) {
-                  message("favorite-order-message", error.message, "error");
-                  button.disabled = false;
-                }
+              button.onclick = () => {
+                // 矢印はドラッグ&ドロップと同じくローカルで並びを変えるだけ。
+                // サーバーへの確定は「お気に入り順を保存」ボタンで行う。
+                const rows = [...orderList.querySelectorAll(".favorite-order-row")];
+                const current = rows.find(item => item.dataset.path === track.path);
+                if (!current) return;
+                const target = direction === "up" ? current.previousElementSibling : current.nextElementSibling;
+                if (!target) return;
+                if (direction === "up") target.before(current);
+                else target.after(current);
+                favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
+                favoriteOrderDirty = true;
+                refreshOrderButtons();
+                $("save-favorites").disabled = false;
+                message("favorite-order-message", "並び替えを変更しました。保存してください。");
               };
               actions.append(button);
             }
