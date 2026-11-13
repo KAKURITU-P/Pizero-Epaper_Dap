@@ -62,8 +62,20 @@
     .favorite-row small { display: block; color: #64727d; overflow-wrap: anywhere; }
     .favorite-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .favorite-actions button { padding: 6px 9px; font-size: .88rem; }
-    .favorite-order-row { cursor: grab; }
-    .favorite-order-row.dragging { opacity: .45; }
+    .favorite-order-row { grid-template-columns: auto 1fr auto; }
+    .drag-handle {
+      cursor: grab;
+      touch-action: none;            /* ハンドル上でタッチスクロールを始めない */
+      user-select: none;
+      -webkit-user-select: none;
+      padding: 4px 6px;
+      color: #64727d;
+      font-size: 1.05rem;
+      line-height: 1;
+      justify-self: start;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .favorite-order-row.dragging { opacity: .45; box-shadow: 0 0 0 2px #9db4c4; }
     .favorite-tree { gap: 5px; }
     .favorite-tree details {
       margin: 0;
@@ -256,30 +268,42 @@
         } else {
           for (const [index, track] of result.favorites.entries()) {
             const row = document.createElement("div"); row.className = "favorite-row favorite-order-row";
-            row.draggable = true;
             row.dataset.path = track.path;
-            row.addEventListener("dragstart", () => {
+            // ドラッグはPointer Eventsで実装。HTML5のdraggableはスマホの
+            // タッチ操作で発火しないため、≡ハンドルを掴む方式にする。
+            const handle = document.createElement("span");
+            handle.className = "drag-handle";
+            handle.textContent = "≡";
+            handle.title = "ドラッグして並び替え";
+            handle.addEventListener("pointerdown", event => {
+              event.preventDefault();
+              try { handle.setPointerCapture(event.pointerId); } catch (error) { /* 古いブラウザーでは省略可 */ }
               row.classList.add("dragging");
             });
-            row.addEventListener("dragend", () => {
-              row.classList.remove("dragging");
+            handle.addEventListener("pointermove", event => {
+              if (!row.classList.contains("dragging")) return;
+              // 指先/カーソルのYがどの行の中心を超えたかで挿入位置を決める。
+              const rows = [...orderList.querySelectorAll(".favorite-order-row")].filter(item => item !== row);
+              const index = rows.filter(item => {
+                const rect = item.getBoundingClientRect();
+                return event.clientY > rect.top + rect.height / 2;
+              }).length;
+              if (index < rows.length) rows[index].before(row);
+              else if (rows.length) rows[rows.length - 1].after(row);
             });
-            row.addEventListener("dragover", event => event.preventDefault());
-            row.addEventListener("drop", event => {
-              event.preventDefault();
-              const dragged = orderList.querySelector(".dragging");
-              if (!dragged || dragged === row) return;
-              const rows = [...orderList.querySelectorAll(".favorite-order-row")];
-              const from = rows.indexOf(dragged);
-              const to = rows.indexOf(row);
-              if (from < to) row.after(dragged);
-              else row.before(dragged);
-              favoriteOrder = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
+            handle.addEventListener("pointerup", finishDrag);
+            handle.addEventListener("pointercancel", finishDrag);
+            function finishDrag() {
+              if (!row.classList.contains("dragging")) return;
+              row.classList.remove("dragging");
+              const paths = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
+              if (paths.join("\n") === favoriteOrder.join("\n")) return; // 変化なし
+              favoriteOrder = paths;
               favoriteOrderDirty = true;
               refreshOrderButtons();
               $("save-favorites").disabled = false;
               message("favorite-order-message", "並び替えを変更しました。保存してください。");
-            });
+            }
             const text = document.createElement("div");
             const name = document.createElement("strong"); name.textContent = `${index + 1}. ${track.name}`;
             const path = document.createElement("small"); path.textContent = track.path;
@@ -322,7 +346,7 @@
                 remove.disabled = false;
               }
             };
-            actions.append(remove); row.append(text, actions); orderList.append(row);
+            actions.append(remove); row.append(handle, text, actions); orderList.append(row);
           }
         }
         const list = $("favorites");
