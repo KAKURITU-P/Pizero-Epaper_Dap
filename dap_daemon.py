@@ -1689,13 +1689,15 @@ def display_worker():
                 if output_icon:
                     image.paste(output_icon, (166, 4))
                 # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
-                # 取得不能("--%")のときは空欄にする。
+                # 取得不能("--%")のときは空欄にする。出力アイコンと重ならないよう右寄せ。
                 if time.time() - volume_changed_at < 5.0:
                     slot_str = f"VOL: {int(cur_vol * 100)}%"
                 else:
                     battery_pct, _ = get_battery_info()
                     slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
-                draw.text((176, 2), slot_str, font=font_main, fill=0)
+                if slot_str:
+                    slot_x = max(184, 250 - font_main.getlength(slot_str))
+                    draw.text((slot_x, 2), slot_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
@@ -3814,8 +3816,8 @@ def on_btn_prev():
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. 通常再生時などの曲戻し動作(全画面共通。★登録はWeb管理画面のみ)
-        elif playlist:
+        # 2. PLAY画面での曲戻し動作(メニュー中は音楽操作しない。★はWeb管理のみ)
+        elif current_screen == "PLAY" and playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
             else:
@@ -3830,7 +3832,7 @@ def handle_next_btn_press():
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor + 1) % 4
             request_display_update(is_full_refresh=False)
-        elif playlist:
+        elif current_screen == "PLAY" and playlist:
             current_track_idx = (current_track_idx + 1) % len(playlist)
             play_current_track(full_refresh=True)
 
