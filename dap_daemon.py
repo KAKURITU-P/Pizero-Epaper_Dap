@@ -163,6 +163,8 @@ except Exception:
 os.environ['SDL_AUDIODRIVER'] = 'alsa'
 
 volume = 0.2
+# PLAY画面右端スロットの表示切替用。音量変更時のタイムスタンプ(0=通常のBAT表示)。
+volume_changed_at = 0.0
 
 def set_cur_volume(vol):
     """画面音量を指定されたALSA音量値へ変換して設定する。"""
@@ -550,30 +552,8 @@ def record_playback_history(filepath):
         playback_history = updated
         save_playback_history()
 
-# --- お気に入り追加・削除のヘルパー関数 ---
-def toggle_favorite_by_path(filepath):
-    """指定されたファイルパスをお気に入りに追加/削除する"""
-    global favorites_list
-    sync_favorites()
-    if filepath in favorites_list:
-        favorites_list.remove(filepath)
-        is_fav = False
-    else:
-        favorites_list.append(filepath)
-        is_fav = True
-    save_favorites()
-    return is_fav
-
-def show_fav_toast(is_fav):
-    """お気に入り変更時の通知メッセージ表示"""
-    global status_message
-    status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
-    request_display_update(is_full_refresh=False)
-
-def toggle_favorite_current_track():
-    if not playlist or current_track_idx >= len(playlist):
-        return False
-    return toggle_favorite_by_path(playlist[current_track_idx])
+# お気に入りの追加・解除はWeb管理画面のみで行う(本体ボタンには割り当てなし)。
+# favorites_listはsync_favorites()がWeb側のfavorites.json変更を取り込む。
 
 # save_resume_stateはstate_lockを取らない経路(watchdogの復帰処理)からも
 # 呼ばれるため、一時ファイル競合を避ける専用ロックで直列化する。
@@ -1490,6 +1470,9 @@ def render_eq_screen(image, draw, width, height):
 # --- 6. 描画ワーカー ---
 display_queue = queue.Queue()
 pending_full_refresh = False
+# 部分更新を連続で行える回数。超えると強制full refresh(残像の蓄積をリセット)。
+# 画面切替時は常にfull refreshが走るため蓄積は同一画面内に限定される。
+PARTIAL_REFRESH_LIMIT = 20
 github_update_in_progress = False
 
 def request_display_update(is_full_refresh=False):
@@ -1626,7 +1609,7 @@ def display_worker():
                 is_full = pending_full_refresh
                 pending_full_refresh = False
 
-            if partial_refresh_count >= 10:
+            if partial_refresh_count >= PARTIAL_REFRESH_LIMIT:
                 is_full = True
                 partial_refresh_count = 0
 
@@ -1675,14 +1658,16 @@ def display_worker():
                 render_system_cpu_temp_screen(image, draw, cpu_temp_stats)
 
             elif scr == "PLAY":
-                # スリープタイマー表示生成
+                # スリープタイマー表示生成(60分超は時間形式)
                 timer_str = ""
                 if sleep_timer_end_time > 0:
                     rem_sec = max(0, int(sleep_timer_end_time - time.time()))
-                    timer_str = f" T:{rem_sec // 60}m"
+                    if rem_sec >= 3600:
+                        timer_str = f" T:{rem_sec // 3600}H{(rem_sec % 3600) // 60:02d}"
+                    else:
+                        timer_str = f" T:{rem_sec // 60}m"
 
                 state_str = "> PLAY" if playing else "|| PAUSE"
-                vol_str = f"VOL: {int(cur_vol * 100)}%"
 
                 draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
@@ -1692,7 +1677,7 @@ def display_worker():
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
                     image.paste(playback_mode_icons["repeat_all"], (90, 4))
                 if timer_str:
-                    draw.text((108, 2), truncate_by_width(timer_str.strip(), font_main, 42), font=font_main, fill=0)
+                    draw.text((108, 2), truncate_by_width(timer_str.strip(), font_main, 56), font=font_main, fill=0)
                 if output_mode == "USBOTG":
                     output_icon_name = "usb"
                 elif output_mode == "PWM":
@@ -1702,8 +1687,15 @@ def display_worker():
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (153, 4))
-                draw.text((176, 2), vol_str, font=font_main, fill=0)
+                    image.paste(output_icon, (166, 4))
+                # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
+                # 取得不能("--%")のときは空欄にする。
+                if time.time() - volume_changed_at < 5.0:
+                    slot_str = f"VOL: {int(cur_vol * 100)}%"
+                else:
+                    battery_pct, _ = get_battery_info()
+                    slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
+                draw.text((176, 2), slot_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
@@ -2928,14 +2920,12 @@ def update_menu_items(reset_cursor=True):
         entries.append({"label": label, "id": action_id, "data": data})
 
     if current_screen == "MENU_TOP":
-        pct, _ = get_battery_info()
+        add("★お気に入り", "open_favs")
         add("アルバム", "open_albums")
+        add("再生設定", "open_play_settings")
+        add("システム設定", "open_sys")
         if is_clock_unlocked:
             add("時計画面", "open_cat_clock")
-        add("再生設定", "open_play_settings")
-        add("接続設定", "open_conn")
-        add("システム設定", "open_sys")
-        add(f"バッテリー: {pct}", "refresh_battery")
 
     elif current_screen == "MENU_PLAY_SETTINGS":
         rep_labels = ["OFF", "ONE", "ALL"]
@@ -2943,20 +2933,21 @@ def update_menu_items(reset_cursor=True):
         add(f"シャッフル: {'ON' if is_shuffle else 'OFF'}", "toggle_shuffle")
         add(f"リピート: {rep_labels[repeat_mode]}", "toggle_repeat")
         add("スリープタイマー", "open_sleep")
+        add("出力先設定", "open_output")
         if is_eq_unlocked:
             add("EQ設定", "open_eq")
 
     elif current_screen == "MENU_SLEEP":
         add("../ (戻る)", "back", ("MENU_PLAY_SETTINGS", None))
         add(f"タイマーOFF {'<--' if sleep_timer_minutes == 0 else ''}", "set_sleep", 0)
-        add(f"15分 {'<--' if sleep_timer_minutes == 15 else ''}", "set_sleep", 15)
         add(f"30分 {'<--' if sleep_timer_minutes == 30 else ''}", "set_sleep", 30)
-        add(f"60分 {'<--' if sleep_timer_minutes == 60 else ''}", "set_sleep", 60)
+        add(f"1時間 {'<--' if sleep_timer_minutes == 60 else ''}", "set_sleep", 60)
+        add(f"2時間 {'<--' if sleep_timer_minutes == 120 else ''}", "set_sleep", 120)
 
     elif current_screen == "MENU_FAVS":
         # 削除済みファイルは履歴と同様に表示から除外する(登録自体は残す)。
         available_favs = [path for path in favorites_list if os.path.isfile(path)]
-        add("../ (戻る)", "back", ("MENU_ALBUMS", None))
+        add("../ (戻る)", "back", ("MENU_TOP", None))
         for path in available_favs:
             add(os.path.splitext(os.path.basename(path))[0], "play_fav", (list(available_favs), path))
 
@@ -2967,14 +2958,13 @@ def update_menu_items(reset_cursor=True):
             add(os.path.splitext(os.path.basename(path))[0], "play_history", (list(history_paths), path))
 
     elif current_screen == "MENU_CONN":
-        add("../ (戻る)", "back", ("MENU_TOP", None))
-        add("出力先設定", "open_output")
+        add("../ (戻る)", "back", ("MENU_SYS", None))
         add("Wi-Fi設定", "open_wifi")
         add("Bluetooth設定", "open_bt")
         add(f"APモード: {'ON' if get_ap_status() else 'OFF'}", "ap_toggle")
 
     elif current_screen == "MENU_OUTPUT":
-        add("../ (戻る)", "back", ("MENU_CONN", None))
+        add("../ (戻る)", "back", ("MENU_PLAY_SETTINGS", None))
         add(f"現在のモード: [{audio_output_mode}]", "none")
         add("PWMに変更", "output_pwm")
         add("BTに変更", "output_bt")
@@ -2995,6 +2985,7 @@ def update_menu_items(reset_cursor=True):
                 add("(読み込み失敗: 戻って再試行)", "none")
             else:
                 add("(記憶されたWi-Fiなし)", "none")
+            add(f"IP: {menu_ip_address}", "none")
         else:
             add("(Wi-Fi OFF中)", "none")
 
@@ -3003,6 +2994,7 @@ def update_menu_items(reset_cursor=True):
         add("../ (戻る)", "back", ("MENU_CONN", None))
         add(f"Bluetooth機能: {'ON' if bt_on else 'OFF'}", "bt_rfkill")
         if bt_on:
+            add(f"BTコーデック: {menu_bt_codec}", "none")
             add("登録済みデバイス", "open_bt_paired")
             add("新規デバイスの検索", "open_bt_scan")
         else:
@@ -3035,16 +3027,18 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_SYS":
         add("../ (戻る)", "back", ("MENU_TOP", None))
-        add("曲ライブラリ再読み込み", "lib_reload")
+        add("接続設定", "open_conn")
+        add("電源", "open_power")
         add("GitHubから更新", "github_update")
-        add("アプリ再起動", "app_restart")
         add("ライセンス表示", "license")
         if is_clock_unlocked or is_eq_unlocked:
             add("隠し機能を削除", "remove_hidden")
-        add(f"IP: {menu_ip_address}", "none")
-        add(f"BTコーデック: {menu_bt_codec}", "none")
         add("RAM/ROM使用量", "open_resource_ram")
         add("CPU使用率/温度", "open_resource_cpu")
+
+    elif current_screen == "MENU_POWER":
+        add("../ (戻る)", "back", ("MENU_SYS", None))
+        add("アプリ再起動", "app_restart")
         add("再起動", "sys_reboot")
         add("シャットダウン", "sys_shutdown")
 
@@ -3054,7 +3048,7 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
         add("../ (戻る)", "back", ("MENU_TOP", None))
-        add("[★ お気に入り]", "open_favs")
+        add("曲ライブラリ再読み込み", "lib_reload")
         add("[再生履歴]", "open_history")
         for lib_entry in library_menu_entries:
             if lib_entry["type"] == "dir":
@@ -3582,10 +3576,11 @@ def on_btn_menu_or_select():
             current_screen = "MENU_SYS_CPU_TEMP"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
+        elif entry_id == "open_power":
+            current_screen = "MENU_POWER"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
 
-        elif entry_id == "refresh_battery":
-            update_menu_items(reset_cursor=False)
-            request_display_update(is_full_refresh=False)
         elif entry_id == "toggle_shuffle":
             toggle_shuffle()
             update_menu_items(reset_cursor=False)
@@ -3693,9 +3688,10 @@ def on_btn_menu_or_select():
 def on_btn_play_or_back():
     if not debounce("btn_play_back"): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
+    global selected_album
     with state_lock:
         reset_inactivity_timer()
-        
+
         if current_screen == "CAT_EQ":
             if eq_cursor == 3:
                 eq_values["BASS"] = 0
@@ -3713,7 +3709,8 @@ def on_btn_play_or_back():
             current_screen = "MENU_SYS"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
-        elif current_screen == "PLAY":
+            return
+        if current_screen == "PLAY":
             if is_playing:
                 pause_start_time = time.time()
                 track_paused_time = get_current_sec()
@@ -3734,14 +3731,35 @@ def on_btn_play_or_back():
                 else:
                     pause_start_time = 0.0
                     play_current_track(full_refresh=True)
-        else:
+            return
+        menu_screen = current_screen
+    # メニュー画面中: 長押し(1秒)=PLAYへ即戻り / 短押し=1階層戻る。
+    # 長押し判定はロック外で押下時間を計測し、単押し処理との誤発を避ける。
+    press_start = time.time()
+    while btn_play_back.is_pressed and time.time() - press_start < 1.0:
+        time.sleep(0.05)
+    long_pressed = btn_play_back.is_pressed or time.time() - press_start >= 1.0
+    with state_lock:
+        if long_pressed:
             current_screen = "PLAY"
             request_display_update(is_full_refresh=True)
+            return
+        # 短押し: 現在画面の「../ (戻る)」定義に従って1階層戻る。
+        back_entry = next((entry for entry in menu_entries if entry["id"] == "back"), None)
+        if back_entry is None:
+            current_screen = "PLAY"
+            request_display_update(is_full_refresh=True)
+            return
+        target_screen, target_album = back_entry["data"]
+        selected_album = target_album
+        current_screen = target_screen
+        update_menu_items(reset_cursor=True)
+        request_display_update(is_full_refresh=True)
 
 def on_btn_up_action():
     if not debounce("btn_up_act"): return
     if exit_cat_clock_if_needed(): return
-    global volume, cursor_idx, scroll_offset
+    global volume, volume_changed_at, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -3752,6 +3770,7 @@ def on_btn_up_action():
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
+            volume_changed_at = time.time()
             set_cur_volume(volume)
             request_display_update(is_full_refresh=False)
         else:
@@ -3763,7 +3782,7 @@ def on_btn_up_action():
 def on_btn_down_action():
     if not debounce("btn_down_act"): return
     if exit_cat_clock_if_needed(): return
-    global volume, cursor_idx, scroll_offset
+    global volume, volume_changed_at, cursor_idx, scroll_offset
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -3774,6 +3793,7 @@ def on_btn_down_action():
                 request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
+            volume_changed_at = time.time()
             set_cur_volume(volume)
             request_display_update(is_full_refresh=False)
         else:
@@ -3788,22 +3808,13 @@ def on_btn_prev():
     global current_track_idx, eq_cursor
     with state_lock:
         reset_inactivity_timer()
-        
+
         # 1. EQ画面の場合
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. フォルダ内の曲一覧画面（MENU_TRACKS）の場合 -> カーソル位置の曲をお気に入りに追加/解除
-        elif current_screen == "MENU_TRACKS":
-            chosen_idx = cursor_idx - 1  # 0番目は "../ (戻る)"
-            if 0 <= chosen_idx < len(library_menu_entries):
-                entry = library_menu_entries[chosen_idx]
-                if entry["type"] == "track":
-                    is_fav = toggle_favorite_by_path(entry["path"])
-                    show_fav_toast(is_fav)
-
-        # 3. 通常再生時などの曲戻し動作
+        # 2. 通常再生時などの曲戻し動作(全画面共通。★登録はWeb管理画面のみ)
         elif playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
@@ -3812,19 +3823,8 @@ def on_btn_prev():
                 play_current_track(full_refresh=True)
 
 def handle_next_btn_press():
-    """NEXTボタンの長押し検知 (PLAY画面での Fav トグル) ＆ 通常押し (曲送り)"""
+    """NEXTボタンの短押し処理(曲送り/EQカーソル)。長押し機能は廃止。"""
     global current_track_idx, eq_cursor
-    
-    start_t = time.time()
-    while btn_next.is_pressed:
-        time.sleep(0.05)
-        if current_screen == "PLAY" and (time.time() - start_t) >= 1.2:
-            with state_lock:
-                is_fav = toggle_favorite_current_track()
-                show_fav_toast(is_fav)
-            return
-
-    # 通常押し（短押し）処理
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
@@ -3837,7 +3837,7 @@ def handle_next_btn_press():
 def on_btn_next():
     if not debounce("btn_next"): return
     if exit_cat_clock_if_needed(): return
-    threading.Thread(target=handle_next_btn_press, daemon=True).start()
+    handle_next_btn_press()
 
 # --- 10. GPIO割り当て ---
 BOUNCE_SEC = 0.1
@@ -3915,6 +3915,10 @@ try:
         # 予約済みのsettings.json書き込み(delay後)をここで確実に実行する。
         if _settings_save_dirty and now >= _settings_save_due:
             flush_pending_settings_save()
+        # 音量表示の5秒期限切れ → 右端スロットをBATに戻す(部分更新1回)。
+        if volume_changed_at and now - volume_changed_at >= 5.0:
+            volume_changed_at = 0.0
+            request_display_update(is_full_refresh=False)
 
         # 0%になっても再生中の曲は最後まで再生してから電源を切る。
         battery_percent = get_battery_percent()
