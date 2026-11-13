@@ -3670,7 +3670,8 @@ def on_btn_menu_or_select():
             request_display_update(is_full_refresh=True)
         elif entry_id == "license":
             if not check_easter_egg_trigger():
-                status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[V {get_display_version(BASE_DIR)}]"
+                # タグ名にVが含まれるため、ここでVを前置きしない(二重表記防止)。
+                status_message = f"MIT License\n(c) kakuritsu\nTwitter:@KAKURITU_P\n[{get_display_version(BASE_DIR)}]"
                 request_display_update(is_full_refresh=False)
                 def _clear_status():
                     time.sleep(3.0)
