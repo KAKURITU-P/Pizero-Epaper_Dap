@@ -1688,13 +1688,13 @@ def display_worker():
 
                 draw.text((8, 2), truncate_by_width(state_str, font_main, 58), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
-                    image.paste(playback_mode_icons["shuffle"], (67, 4))
+                    image.paste(playback_mode_icons["shuffle"], (66, 4))
                 if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_one"], (90, 4))
+                    image.paste(playback_mode_icons["repeat_one"], (88, 4))
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
-                    image.paste(playback_mode_icons["repeat_all"], (90, 4))
+                    image.paste(playback_mode_icons["repeat_all"], (88, 4))
                 if timer_str:
-                    draw.text((108, 2), truncate_by_width(timer_str.strip(), font_main, 56), font=font_main, fill=0)
+                    draw.text((112, 2), truncate_by_width(timer_str.strip(), font_main, 50), font=font_main, fill=0)
                 if output_mode == "USBOTG":
                     output_icon_name = "usb"
                 elif output_mode == "PWM":
@@ -1704,7 +1704,7 @@ def display_worker():
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (166, 4))
+                    image.paste(output_icon, (170, 4))
                 # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
                 # 取得不能("--%")のときは空欄にする。出力アイコンと重ならないよう右寄せ。
                 if time.time() - volume_changed_at < 5.0:
@@ -1713,7 +1713,7 @@ def display_worker():
                     battery_pct, _ = get_battery_info()
                     slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
                 if slot_str:
-                    slot_x = max(184, 250 - font_main.getlength(slot_str))
+                    slot_x = max(188, 250 - font_main.getlength(slot_str))
                     draw.text((slot_x, 2), slot_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
