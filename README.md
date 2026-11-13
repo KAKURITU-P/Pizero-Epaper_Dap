@@ -60,6 +60,7 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 .
 ├── dap_daemon.py       # DAP メイン制御デーモン (Pygame / GPIO / EPD)
 ├── battery_utils.py    # バッテリー状態ファイルの読み取り
+├── audio_device_utils.py # USBオーディオデバイス検出・サンプルレート選択
 ├── font_utils.py       # フォント検出と読み込み
 ├── icon_utils.py       # スプライトシートからのアイコン・船画像の切り出し
 ├── render_utils.py     # 表示用テキスト整形(幅合わせ省略・時間・サイズ)

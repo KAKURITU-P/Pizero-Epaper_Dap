@@ -38,7 +38,6 @@ from bluealsa_utils import (
     build_bluealsa_asoundrc,
     build_pwm_asoundrc,
     build_usb_otg_asoundrc,
-    choose_usb_sample_rate,
     find_usb_audio_device,
     has_bluetooth_acl_link,
     pcm_list_contains_device,
@@ -66,6 +65,12 @@ for _path in (BASE_DIR, "/home/pi/dap"):
         sys.path.append(_path)
 
 from battery_utils import get_battery_info, get_battery_percent  # noqa: E402
+from audio_device_utils import (  # noqa: E402
+    asoundrc_uses_usb_otg,
+    get_audio_buffer_size,
+    get_usb_otg_sample_rate,
+    resolve_usb_otg_device,
+)
 from font_utils import find_japanese_font, get_font  # noqa: E402
 from icon_utils import get_cropped_ship, load_playback_mode_icons  # noqa: E402
 from render_utils import (  # noqa: E402
@@ -120,33 +125,14 @@ def write_text_atomically(path, content):
         raise
 USB_OTG_ALSA_DEVICE_ENV = os.environ.get("DAP_USB_OTG_ALSA_DEVICE")
 
-def resolve_usb_otg_device():
-    """USB音声デバイスを返す。環境変数 > /proc/asound/cards の自動検出 > plughw:1,0。"""
-    if USB_OTG_ALSA_DEVICE_ENV:
-        return USB_OTG_ALSA_DEVICE_ENV
-    try:
-        with open("/proc/asound/cards", "r", encoding="utf-8", errors="replace") as cards_file:
-            detected = find_usb_audio_device(cards_file.read())
-    except OSError:
-        detected = None
-    return detected or "plughw:1,0"
-
-USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
-
-def asoundrc_uses_usb_otg(content):
-    """~/.asoundrc が USB OTG 出力向けか判定する(カード番号が変わっても追従)。"""
-    return (
-        USB_OTG_ALSA_DEVICE in content
-        or "plughw:CARD=" in content
-        or (USB_OTG_ALSA_DEVICE_ENV is not None and USB_OTG_ALSA_DEVICE_ENV in content)
-    )
+USB_OTG_ALSA_DEVICE = resolve_usb_otg_device(USB_OTG_ALSA_DEVICE_ENV)
 
 if os.path.exists(asoundrc_path):
     with open(asoundrc_path, "r") as f:
         content = f.read()
     if "bluealsa" in content:
         audio_output_mode = "BT"
-    elif asoundrc_uses_usb_otg(content):
+    elif asoundrc_uses_usb_otg(content, USB_OTG_ALSA_DEVICE, USB_OTG_ALSA_DEVICE_ENV):
         audio_output_mode = "USBOTG"
     else:
         audio_output_mode = "PWM"
@@ -192,38 +178,6 @@ def set_cur_volume(vol):
         scaled_vol = alsa_levels[level_index]
         pygame.mixer.music.set_volume(scaled_vol)
 
-def get_audio_buffer_size():
-    """pygameのバッファ(サンプル数)。環境変数 DAP_AUDIO_BUFFER で調整できる。"""
-    try:
-        value = int(os.environ.get("DAP_AUDIO_BUFFER", "16384"))
-    except ValueError:
-        return 16384
-    return value if 1024 <= value <= 65536 else 16384
-
-def get_usb_otg_sample_rate():
-    """USB音声のサンプルレート。環境変数 > デバイスのネイティブ対応レート > 44100。
-
-    デバイスが対応していないレートで開くとALSAがソフトウェアでリサンプルし、
-    Pi Zeroでは音切れの原因になるため、対応レートに合わせる。
-    """
-    override = os.environ.get("DAP_USB_OTG_SAMPLE_RATE")
-    if override:
-        try:
-            rate = int(override)
-            if 8000 <= rate <= 192000:
-                return rate
-        except ValueError:
-            pass
-    match = re.search(r"CARD=([A-Za-z0-9_]+)", USB_OTG_ALSA_DEVICE)
-    if match:
-        try:
-            with open(f"/proc/asound/{match.group(1)}/stream0", "r",
-                      encoding="utf-8", errors="replace") as stream_file:
-                return choose_usb_sample_rate(stream_file.read(), default=44100)
-        except OSError:
-            pass
-    return 44100
-
 def safe_init_audio():
     try:
         if pygame.mixer.get_init():
@@ -244,7 +198,7 @@ def safe_init_audio():
         if audio_output_mode == "BT":
             frequency = 48000
         elif audio_output_mode == "USBOTG":
-            frequency = get_usb_otg_sample_rate()
+            frequency = get_usb_otg_sample_rate(USB_OTG_ALSA_DEVICE)
         else:
             frequency = 44100
         buffer_size = get_audio_buffer_size()
@@ -278,7 +232,7 @@ def init_usb_otg_audio(attempts=4, delay=1.0):
             time.sleep(delay)
         if not usb_audio_present():
             continue
-        USB_OTG_ALSA_DEVICE = resolve_usb_otg_device()
+        USB_OTG_ALSA_DEVICE = resolve_usb_otg_device(USB_OTG_ALSA_DEVICE_ENV)
         try:
             write_text_atomically(asoundrc_path, build_usb_otg_asoundrc(USB_OTG_ALSA_DEVICE))
         except Exception as error:
@@ -1860,9 +1814,57 @@ def cat_clock_timer_thread():
 
 threading.Thread(target=cat_clock_timer_thread, daemon=True).start()
 
+# --- 6.5 音声出力操作の単一実行点(アクター) ---
+# .asoundrc / mixer / 出力モード / BT接続の遷移は audio_worker_thread だけが
+# 実行する。UI・watchdogはコマンドを投入するだけで、切替処理の並行実行を
+# 構造的に防ぐ(フラグ競合・設定ファイル同時書き込みの温床をなくす)。
+audio_command_queue = queue.Queue()
+_audio_worker_context = threading.local()
+
+def _in_audio_worker():
+    return getattr(_audio_worker_context, "active", False)
+
+def submit_audio_command(command, *args):
+    audio_command_queue.put((command, args))
+
+def audio_worker_thread():
+    _audio_worker_context.active = True
+    while True:
+        command = None
+        try:
+            command, args = audio_command_queue.get()
+            if command == "set_output":
+                mode = args[0] if args else None
+                if mode not in ("PWM", "USBOTG", "BT"):
+                    print(f"Audio worker: unknown output mode {mode!r}")
+                    continue
+                mac = args[1] if len(args) > 1 else None
+                set_audio_output(mode, mac=mac)
+            elif command == "connect_bt":
+                mac = args[0] if args else ""
+                name = args[1] if len(args) > 1 else "Unknown"
+                _run_bt_connection_job(mac, name)
+            elif command == "suspend_lost":
+                suspend_audio_for_lost_output(args[0] if args else "音声デバイス切断")
+            elif command == "recover_usb":
+                recover_usb_otg_audio()
+            elif command == "recover_bt":
+                recover_bt_audio(args[0] if args else "")
+            else:
+                print(f"Audio worker: unknown command {command!r}")
+        except Exception as error:
+            print(f"Audio worker error ({command}): {error}")
+
 # --- 7. Bluetooth 接続 & オーディオ出力切替 ---
 def start_bt_connection(mac, name="Unknown", state_lock_held=False):
-    """Prevent overlapping Bluetooth pair/connect/audio reconfiguration jobs."""
+    """BT接続ジョブを音声ワーカーへ依頼する。重複起動はしない。
+
+    ワーカー内部から呼ばれた場合(出力先BTへの切替など)は
+    同一ワーカー上で直列に実行を続ける。
+    """
+    if _in_audio_worker():
+        _run_bt_connection_job(mac, name)
+        return
     global bt_connect_in_progress
     if state_lock_held:
         if bt_connect_in_progress:
@@ -1873,16 +1875,17 @@ def start_bt_connection(mac, name="Unknown", state_lock_held=False):
             if bt_connect_in_progress:
                 return
             bt_connect_in_progress = True
+    submit_audio_command("connect_bt", mac, name)
 
-    def _connect():
-        global bt_connect_in_progress
-        try:
-            connect_bt_device(mac, name)
-        finally:
-            with state_lock:
-                bt_connect_in_progress = False
-
-    threading.Thread(target=_connect, daemon=True).start()
+def _run_bt_connection_job(mac, name="Unknown"):
+    """ワーカー上でBT接続を実行する。実行中はbt_connect_in_progressを立てる。"""
+    global bt_connect_in_progress
+    bt_connect_in_progress = True
+    try:
+        connect_bt_device(mac, name)
+    finally:
+        with state_lock:
+            bt_connect_in_progress = False
 
 def connect_bt_device(mac, name="Unknown"):
     global status_message, connected_bt_mac, audio_output_mode
@@ -2150,9 +2153,14 @@ def connect_bt_device(mac, name="Unknown"):
     request_display_update(is_full_refresh=False)
 
 def set_audio_output(mode, mac=None, state_lock_held=False):
+    """出力先を切り替える。UI経由では音声ワーカーへ依頼し、実行は直列化する。"""
     global audio_output_mode, status_message, connected_bt_mac
     global is_playing, audio_transition_in_progress, USB_OTG_ALSA_DEVICE
     global audio_output_lost, audio_lost_action
+
+    if not _in_audio_worker():
+        submit_audio_command("set_output", mode, mac)
+        return
 
     status_message = f"切替中: {mode}"
     request_display_update(is_full_refresh=False)
@@ -2160,12 +2168,19 @@ def set_audio_output(mode, mac=None, state_lock_held=False):
     if mode == "BT":
         target_mac = mac or connected_bt_mac
         if target_mac:
-            start_bt_connection(target_mac, "Bluetooth", state_lock_held=state_lock_held)
+            start_bt_connection(target_mac, "Bluetooth")
         else:
             status_message = "MAC未設定"
             request_display_update(is_full_refresh=False)
+        return
 
-    elif mode in ("PWM", "USBOTG"):
+    # PWM/USBOTGの切替は、旧実装ではUIスレッドがstate_lockを保持したまま
+    # 実行していた。ワーカー実行でも同じ排他を保ち、再生系ボタン操作
+    # (play_current_trackのmixer再初期化)と重ならないようにする。
+    # BT接続はbluetoothctl待ちが長いためロックを保持しない。
+    with state_lock:
+        if mode not in ("PWM", "USBOTG"):
+            return
         was_playing = is_playing
         audio_transition_in_progress = True
         is_playing = False
@@ -3151,15 +3166,16 @@ def restore_playback_after_audio_return():
         except Exception as seek_error:
             print(f"位置指定の再生に失敗、曲頭から再生します: {seek_error}")
             pygame.mixer.music.play()
-            with state_lock:
-                start_time = pause_start_time = time.time()
-                paused_duration = 0.0
-                track_paused_time = 0
+            # state_lockは取らない。旧実装の呼び出し経路(UIがstate_lock保持中の
+            # 出力切替)ではここで再取得するとデッドロックしていた。
+            # 各代入はGILにより原子で、時刻計算の僅かなずれは表示だけの影響。
+            start_time = pause_start_time = time.time()
+            paused_duration = 0.0
+            track_paused_time = 0
         if action == "resume":
-            with state_lock:
-                paused_duration += time.time() - pause_start_time
-                pause_start_time = 0.0
-                is_playing = True
+            paused_duration += time.time() - pause_start_time
+            pause_start_time = 0.0
+            is_playing = True
         else:
             pygame.mixer.music.pause()
     except Exception as error:
@@ -3282,17 +3298,17 @@ def audio_output_watchdog_thread():
                     if usb_missing >= 2:  # 約1秒の猶予
                         usb_missing = 0
                         print("USB DAC disconnected; pausing playback.")
-                        suspend_audio_for_lost_output("USB DAC切断")
+                        submit_audio_command("suspend_lost", "USB DAC切断")
                 elif not present:
                     usb_seen_since = None
                 else:
                     if usb_seen_since is None:
                         usb_seen_since = now
                     elif now - usb_seen_since >= 1.0 and now >= next_usb_retry:
-                        if recover_usb_otg_audio():
-                            usb_seen_since = None
-                        else:
-                            next_usb_retry = time.monotonic() + 3.0
+                        # 復帰はワーカーへ依頼。失敗時はnext_usb_retryの間隔で再依頼する。
+                        submit_audio_command("recover_usb")
+                        usb_seen_since = None
+                        next_usb_retry = time.monotonic() + 3.0
 
             elif mode == "BT" and connected_bt_mac:
                 mac = connected_bt_mac
@@ -3314,12 +3330,12 @@ def audio_output_watchdog_thread():
                                 next_bt_confirm = time.monotonic() + 15.0
                     if lost and audio_output_mode == "BT":
                         print("Bluetooth disconnected; pausing and trying to reconnect.")
-                        if suspend_audio_for_lost_output("BT切断"):
-                            bt_window_end = time.monotonic() + BT_RECONNECT_WINDOW_SEC
-                            next_bt_attempt = 0.0
-                            next_bt_background = bt_window_end + 5.0
-                            next_bt_probe = 0.0
-                            next_bt_recover = 0.0
+                        submit_audio_command("suspend_lost", "BT切断")
+                        bt_window_end = time.monotonic() + BT_RECONNECT_WINDOW_SEC
+                        next_bt_attempt = 0.0
+                        next_bt_background = bt_window_end + 5.0
+                        next_bt_probe = 0.0
+                        next_bt_recover = 0.0
                 else:
                     # 他のBT機器が接続中でもsysfsの接続一覧は残るため、
                     # 復帰判定は対象MACを直接確認する(再生していないので負荷は問題にならない)。
@@ -3353,10 +3369,10 @@ def audio_output_watchdog_thread():
                             and not audio_transition_in_progress
                             and not bt_connect_in_progress
                         ):
-                            if recover_bt_audio(mac):
-                                bt_gave_up = False
-                            else:
-                                next_bt_recover = time.monotonic() + 5.0
+                            # 復帰はワーカーへ依頼。成否は次ループのaudio_output_lostで
+                            # 判定し、失敗時はnext_bt_recoverの間隔で再依頼する。
+                            submit_audio_command("recover_bt", mac)
+                            next_bt_recover = time.monotonic() + 5.0
                     elif time.monotonic() >= bt_window_end and not bt_gave_up:
                         bt_gave_up = True
                         print(f"BT再接続を{BT_RECONNECT_WINDOW_SEC:.0f}秒試しましたが接続できません。接続され次第、自動で復帰します。")
@@ -3848,6 +3864,8 @@ def handle_track_completion():
         is_playing = False
         request_display_update(is_full_refresh=False)
 
+# 音声ワーカーを先に起動してからwatchdogを始める(投入済みコマンドの処理保証)。
+threading.Thread(target=audio_worker_thread, daemon=True).start()
 threading.Thread(target=system_resource_monitor_thread, daemon=True).start()
 threading.Thread(target=audio_output_watchdog_thread, daemon=True).start()
 
