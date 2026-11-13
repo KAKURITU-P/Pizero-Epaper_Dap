@@ -3690,7 +3690,6 @@ def on_btn_menu_or_select():
 def on_btn_play_or_back():
     if not debounce("btn_play_back"): return
     global current_screen, is_playing, track_paused_time, pause_start_time, paused_duration
-    global selected_album
     with state_lock:
         reset_inactivity_timer()
 
@@ -3711,8 +3710,7 @@ def on_btn_play_or_back():
             current_screen = "MENU_SYS"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
-            return
-        if current_screen == "PLAY":
+        elif current_screen == "PLAY":
             if is_playing:
                 pause_start_time = time.time()
                 track_paused_time = get_current_sec()
@@ -3733,30 +3731,10 @@ def on_btn_play_or_back():
                 else:
                     pause_start_time = 0.0
                     play_current_track(full_refresh=True)
-            return
-        menu_screen = current_screen
-    # メニュー画面中: 長押し(1秒)=PLAYへ即戻り / 短押し=1階層戻る。
-    # 長押し判定はロック外で押下時間を計測し、単押し処理との誤発を避ける。
-    press_start = time.time()
-    while btn_play_back.is_pressed and time.time() - press_start < 1.0:
-        time.sleep(0.05)
-    long_pressed = btn_play_back.is_pressed or time.time() - press_start >= 1.0
-    with state_lock:
-        if long_pressed:
+        else:
+            # メニュー中: 押した瞬間にPLAY画面へ(音楽状態は触らない)
             current_screen = "PLAY"
             request_display_update(is_full_refresh=True)
-            return
-        # 短押し: 現在画面の「../ (戻る)」定義に従って1階層戻る。
-        back_entry = next((entry for entry in menu_entries if entry["id"] == "back"), None)
-        if back_entry is None:
-            current_screen = "PLAY"
-            request_display_update(is_full_refresh=True)
-            return
-        target_screen, target_album = back_entry["data"]
-        selected_album = target_album
-        current_screen = target_screen
-        update_menu_items(reset_cursor=True)
-        request_display_update(is_full_refresh=True)
 
 def on_btn_up_action():
     if not debounce("btn_up_act"): return
@@ -3807,22 +3785,32 @@ def on_btn_down_action():
 def on_btn_prev():
     if not debounce("btn_prev"): return
     if exit_cat_clock_if_needed(): return
-    global current_track_idx, eq_cursor
+    global current_track_idx, eq_cursor, selected_album
     with state_lock:
         reset_inactivity_timer()
 
-        # 1. EQ画面の場合
+        # 1. EQ画面の場合: カーソル移動
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. PLAY画面での曲戻し動作(メニュー中は音楽操作しない。★はWeb管理のみ)
+        # 2. PLAY画面の場合: 曲戻し(3秒超なら頭出し)
         elif current_screen == "PLAY" and playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
             else:
                 current_track_idx = (current_track_idx - 1) % len(playlist)
                 play_current_track(full_refresh=True)
+
+        # 3. メニュー画面の場合: 1階層戻る(「../ (戻る)」と同じ動作。TOPでは戻り先が無いので何もしない)
+        else:
+            back_entry = next((entry for entry in menu_entries if entry["id"] == "back"), None)
+            if back_entry is not None:
+                target_screen, target_album = back_entry["data"]
+                selected_album = target_album
+                current_screen = target_screen
+                update_menu_items(reset_cursor=True)
+                request_display_update(is_full_refresh=True)
 
 def handle_next_btn_press():
     """NEXTボタンの短押し処理(曲送り/EQカーソル)。長押し機能は廃止。"""
