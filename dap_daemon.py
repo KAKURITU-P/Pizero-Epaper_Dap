@@ -555,6 +555,20 @@ def record_playback_history(filepath):
 # お気に入りの追加・解除はWeb管理画面のみで行う(本体ボタンには割り当てなし)。
 # favorites_listはsync_favorites()がWeb側のfavorites.json変更を取り込む。
 
+# --- お気に入り追加・削除のヘルパー関数 ---
+def toggle_favorite_by_path(filepath):
+    """指定されたファイルパスをお気に入りに追加/削除する(アルバム階層の次曲ボタン用)"""
+    global favorites_list
+    sync_favorites()
+    if filepath in favorites_list:
+        favorites_list.remove(filepath)
+        is_fav = False
+    else:
+        favorites_list.append(filepath)
+        is_fav = True
+    save_favorites()
+    return is_fav
+
 # save_resume_stateはstate_lockを取らない経路(watchdogの復帰処理)からも
 # 呼ばれるため、一時ファイル競合を避ける専用ロックで直列化する。
 resume_save_lock = threading.Lock()
@@ -797,6 +811,8 @@ menu_items = []
 # menu_entriesはmenu_itemsと同じ長さで、各項目の操作ID(id)と付随データ(data)を
 # 持つ。選択処理は表示ラベルではなくidで分岐するため、文言変更に依存しない。
 menu_entries = []
+# menu_itemsと同じ長さ。お気に入り済みの曲行など太字(二度描き)表示する行のフラグ。
+menu_item_bold = []
 
 bt_paired_devices = []
 bt_paired_devices_loading = False
@@ -1620,6 +1636,7 @@ def display_worker():
                 cur_idx = cursor_idx
                 sc_off = scroll_offset
                 m_items = list(menu_items)
+                m_bold = list(menu_item_bold)
                 sel_alb = selected_album
                 playing = is_playing
                 cur_vol = volume
@@ -1764,6 +1781,9 @@ def display_worker():
                     prefix = "> " if actual_idx == cur_idx else "  "
                     disp_item = truncate_by_width(f"{prefix}{item}", font_main, 230)
                     draw.text((8, y), disp_item, font=font_main, fill=0)
+                    # お気に入り済みの曲行は太字(1pxずらして二度描き)で識別する
+                    if actual_idx < len(m_bold) and m_bold[actual_idx]:
+                        draw.text((9, y), disp_item, font=font_main, fill=0)
 
             if stat_msg:
                 lines = stat_msg.split("\n")
@@ -2907,7 +2927,7 @@ def get_bt_scanned_devices_snapshot():
     return list(bt_scanned_devices)
 
 def update_menu_items(reset_cursor=True):
-    global menu_items, menu_entries, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
+    global menu_items, menu_entries, menu_item_bold, cursor_idx, scroll_offset, bt_paired_devices, bt_scanned_devices, saved_wifi_ssids, saved_wifi_connections, library_menu_entries, selected_album
     sync_favorites()
     if reset_cursor:
         cursor_idx = 0
@@ -2918,8 +2938,8 @@ def update_menu_items(reset_cursor=True):
     # 選択処理はidで分岐するため、表示文言の変更や他言語化の影響を受けない。
     entries = []
 
-    def add(label, action_id, data=None):
-        entries.append({"label": label, "id": action_id, "data": data})
+    def add(label, action_id, data=None, bold=False):
+        entries.append({"label": label, "id": action_id, "data": data, "bold": bold})
 
     if current_screen == "MENU_TOP":
         add("★お気に入り", "open_favs")
@@ -2955,9 +2975,11 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_HISTORY":
         history_paths = get_available_playback_history()
+        fav_set = set(favorites_list)
         add("../ (戻る)", "back", ("MENU_ALBUMS", None))
         for path in history_paths:
-            add(os.path.splitext(os.path.basename(path))[0], "play_history", (list(history_paths), path))
+            add(os.path.splitext(os.path.basename(path))[0], "play_history",
+                (list(history_paths), path), bold=path in fav_set)
 
     elif current_screen == "MENU_CONN":
         add("../ (戻る)", "back", ("MENU_SYS", None))
@@ -3049,6 +3071,7 @@ def update_menu_items(reset_cursor=True):
 
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
+        fav_set = set(favorites_list)
         add("../ (戻る)", "back", ("MENU_TOP", None))
         add("曲ライブラリ再読み込み", "lib_reload")
         add("[再生履歴]", "open_history")
@@ -3056,12 +3079,15 @@ def update_menu_items(reset_cursor=True):
             if lib_entry["type"] == "dir":
                 add(lib_entry["display"], "album_dir", lib_entry["rel_dir"])
             elif lib_entry["type"] == "track":
-                add(lib_entry["display"], "play_track", lib_entry["path"])
+                # お気に入り済みの曲は太字(二度描き)で識別する
+                add(lib_entry["display"], "play_track", lib_entry["path"],
+                    bold=lib_entry["path"] in fav_set)
 
     elif current_screen == "MENU_TRACKS":
         browsing_dir = normalize_rel_dir(selected_album)
         selected_album = browsing_dir
         library_menu_entries = get_library_entries(browsing_dir, include_folder_play=True)
+        fav_set = set(favorites_list)
         parent_dir = normalize_rel_dir(os.path.dirname(browsing_dir))
         if browsing_dir == ROOT_REL_DIR:
             add("../ (戻る)", "back", ("MENU_TOP", None))
@@ -3075,10 +3101,12 @@ def update_menu_items(reset_cursor=True):
             elif lib_entry["type"] == "play_folder":
                 add(lib_entry["display"], "play_folder", lib_entry["rel_dir"])
             elif lib_entry["type"] == "track":
-                add(lib_entry["display"], "play_track", lib_entry["path"])
+                add(lib_entry["display"], "play_track", lib_entry["path"],
+                    bold=lib_entry["path"] in fav_set)
 
     menu_entries = entries
     menu_items = [entry["label"] for entry in entries]
+    menu_item_bold = [entry["bold"] for entry in entries]
 
 def reset_inactivity_timer():
     global last_user_action_time
@@ -3813,13 +3841,22 @@ def on_btn_prev():
                 request_display_update(is_full_refresh=True)
 
 def handle_next_btn_press():
-    """NEXTボタンの短押し処理(曲送り/EQカーソル)。長押し機能は廃止。"""
-    global current_track_idx, eq_cursor
+    """NEXTボタン: PLAY=曲送り / EQ=カーソル移動 / アルバム階層=カーソル曲の★トグル"""
+    global current_track_idx, eq_cursor, status_message
     with state_lock:
         reset_inactivity_timer()
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor + 1) % 4
             request_display_update(is_full_refresh=False)
+        elif current_screen in ("MENU_ALBUMS", "MENU_TRACKS", "MENU_FAVS", "MENU_HISTORY") and cursor_idx < len(menu_entries):
+            # アルバム階層では曲送りを「カーソル曲のお気に入りトグル」に使う。
+            entry = menu_entries[cursor_idx]
+            if entry["id"] in ("play_track", "play_fav", "play_history"):
+                path = entry["data"][1] if isinstance(entry["data"], tuple) else entry["data"]
+                is_fav = toggle_favorite_by_path(path)
+                status_message = "★ Fav 追加" if is_fav else "★ Fav 解除"
+                update_menu_items(reset_cursor=False)
+                request_display_update(is_full_refresh=False)
         elif current_screen == "PLAY" and playlist:
             current_track_idx = (current_track_idx + 1) % len(playlist)
             play_current_track(full_refresh=True)
