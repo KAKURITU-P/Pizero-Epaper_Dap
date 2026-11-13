@@ -68,7 +68,10 @@
       touch-action: none;            /* ハンドル上でタッチスクロールを始めない */
       user-select: none;
       -webkit-user-select: none;
-      padding: 4px 6px;
+      -webkit-touch-callout: none;   /* モバイル長押しメニュー(暗転)を抑止 */
+      -webkit-tap-highlight-color: transparent;
+      padding: 10px 12px;            /* 指で掴める十分な当たり判定 */
+      margin: -4px -6px;             /* 見た目の余白は相殺しレイアウトを維持 */
       color: #64727d;
       font-size: 1.05rem;
       line-height: 1;
@@ -275,12 +278,7 @@
             handle.className = "drag-handle";
             handle.textContent = "≡";
             handle.title = "ドラッグして並び替え";
-            handle.addEventListener("pointerdown", event => {
-              event.preventDefault();
-              try { handle.setPointerCapture(event.pointerId); } catch (error) { /* 古いブラウザーでは省略可 */ }
-              row.classList.add("dragging");
-            });
-            handle.addEventListener("pointermove", event => {
+            const onDragMove = event => {
               if (!row.classList.contains("dragging")) return;
               // 指先/カーソルのYがどの行の中心を超えたかで挿入位置を決める。
               const rows = [...orderList.querySelectorAll(".favorite-order-row")].filter(item => item !== row);
@@ -290,9 +288,32 @@
               }).length;
               if (index < rows.length) rows[index].before(row);
               else if (rows.length) rows[rows.length - 1].after(row);
-            });
-            handle.addEventListener("pointerup", finishDrag);
-            handle.addEventListener("pointercancel", finishDrag);
+            };
+            // pointermove/pointerupはdocumentで受ける。setPointerCaptureに
+            // 依存すると環境によってcaptureが効かず、指の下の要素にイベントが
+            // 取られてドラッグが途切れる(暗転するだけになる)。
+            let dragListeners = null;
+            const onDragEnd = () => {
+              if (!dragListeners) return;
+              document.removeEventListener("pointermove", onDragMove);
+              document.removeEventListener("pointerup", onDragEnd);
+              document.removeEventListener("pointercancel", onDragEnd);
+              dragListeners = null;
+              finishDrag();
+            };
+            // pointerdownはpassive:falseで登録しないとpreventDefaultが効かず、
+            // モバイルで長押しゴーストクリック(画面が暗転)に操作を横取りされる。
+            handle.addEventListener("pointerdown", event => {
+              if (dragListeners) return; // 多重開始防止
+              event.preventDefault();
+              row.classList.add("dragging");
+              document.addEventListener("pointermove", onDragMove);
+              document.addEventListener("pointerup", onDragEnd);
+              document.addEventListener("pointercancel", onDragEnd);
+              dragListeners = true;
+            }, { passive: false });
+            // タッチ長押しによるコンテキストメニューも抑止する。
+            handle.addEventListener("contextmenu", event => event.preventDefault());
             function finishDrag() {
               if (!row.classList.contains("dragging")) return;
               row.classList.remove("dragging");
