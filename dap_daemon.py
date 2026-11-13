@@ -1545,8 +1545,32 @@ def _github_update_worker():
             _set_github_update_status("GitHubは最新です")
             return
 
+        # stashの前にff-only更新が可能か先に判定し、失敗時はstashを戻す。
+        # web_admin_server.pyの更新処理と同じ挙動に統一。
+        ff_possible = run_git([
+            "merge-base", "--is-ancestor", "HEAD", target.stdout.strip()
+        ], timeout=15)
+        if ff_possible.returncode != 0:
+            raise RuntimeError("履歴が分岐しているため安全に更新できませんでした")
+
+        local_changes = run_git(["status", "--porcelain", "--untracked-files=all"], timeout=15)
+        if local_changes.returncode != 0:
+            raise RuntimeError("ローカル変更を確認できません")
+        stashed = False
+        if local_changes.stdout.strip():
+            stashed_result = run_git([
+                "stash", "push", "--include-untracked",
+                "-m", "DAP local changes before GitHub update",
+            ])
+            if stashed_result.returncode != 0:
+                detail = (stashed_result.stderr or stashed_result.stdout or "ローカル変更を退避できませんでした").strip()[-180:]
+                raise RuntimeError(detail)
+            stashed = True
+
         merged = run_git(["merge", "--ff-only", "--no-edit", target.stdout.strip()])
         if merged.returncode != 0:
+            if stashed:
+                run_git(["stash", "pop"], timeout=30)
             detail = (merged.stderr or merged.stdout or "安全に更新できませんでした").strip()[-180:]
             raise RuntimeError(detail)
 
@@ -1560,7 +1584,10 @@ def _github_update_worker():
             if patched.returncode != 0:
                 raise RuntimeError((patched.stderr or patched.stdout or "画面ドライバーを更新できません").strip()[-180:])
 
-        _set_github_update_status("更新しました。再起動します")
+        if stashed:
+            _set_github_update_status("更新しました(ローカル変更はstashに退避)。再起動します")
+        else:
+            _set_github_update_status("更新しました。再起動します")
         time.sleep(1.5)
         # Restart this service process in place. Calling systemctl restart from
         # inside the unit can kill this worker/command during the stop phase,
@@ -2112,14 +2139,9 @@ def connect_bt_device(mac, name="Unknown"):
                         raise RuntimeError("Pygame mixerの初期化に失敗しました")
                     audio_output_lost = False
                     audio_lost_action = None
-                    try:
-                        subprocess.run(
-                            ["amixer", "-D", "equal", "sset", "Master", "100%"],
-                            check=False,
-                            timeout=5,
-                        )
-                    except (OSError, subprocess.SubprocessError) as error:
-                        print(f"ALSA音量設定警告（再生は継続）: {error}")
+                    # 旧実装ではここで amixer -D equal sset Master を実行していたが、
+                    # equalプラグインは帯域コントロールのみでMasterが存在せず
+                    # 常に失敗していただけ(音量はpygameのソフト音量で管理)のため削除。
                     apply_eq_settings()
                     audio_transition_in_progress = False
                     if was_playing:

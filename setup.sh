@@ -125,6 +125,17 @@ sudo systemctl enable --now nginx.service
 sudo systemctl reload nginx.service
 
 echo
+echo "=== I2C bus 3 (バッテリー監視) を確認 ==="
+if [[ -e /dev/i2c-3 ]]; then
+    echo "I2C bus 3 を検出しました。"
+else
+    echo "警告: I2C bus 3 が見つかりません。バッテリー残量表示が '--%' になります。"
+    echo "/boot/firmware/config.txt に以下を追加して再起動してください:"
+    echo "  dtparam=i2c3=on"
+    echo "(raspi-config の I2C 有効化は bus 1 のみ対象です)"
+fi
+
+echo
 echo "セットアップが完了しました。"
 echo "SPIとI2Cを有効にしていない場合は sudo raspi-config の Interface Options で有効にし、再起動してください。"
 echo "バッテリー監視は I2C bus 3 と MCP3425 (0x68) を使用します。配線とバス番号を確認してください。"

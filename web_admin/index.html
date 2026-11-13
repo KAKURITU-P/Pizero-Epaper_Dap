@@ -256,14 +256,16 @@
         favoriteOrderDirty = false;
         $("save-favorites").disabled = false;
         const orderList = $("favorite-order"); orderList.replaceChildren();
-        // 現在のDOM上の位置から▲▼の無効化を計算し直す。
-        // 矢印・ドラッグで並びが変わるたびに呼び、押せる方向を常に最新に保つ。
+        // 現在のDOM上の位置から▲▼の無効化と行番号を計算し直す。
+        // 矢印・ドラッグで並びが変わるたびに呼び、表示を常に最新に保つ。
         const refreshOrderButtons = () => {
           const rows = [...orderList.querySelectorAll(".favorite-order-row")];
           rows.forEach((r, i) => {
             const buttons = r.querySelectorAll(".favorite-actions button");
             if (buttons[0]) buttons[0].disabled = i === 0;
             if (buttons[1]) buttons[1].disabled = i === rows.length - 1;
+            const name = r.querySelector("strong");
+            if (name) name.textContent = `${i + 1}. ${name.textContent.replace(/^\d+\.\s*/, "")}`;
           });
         };
         if (!result.favorites.length) {
