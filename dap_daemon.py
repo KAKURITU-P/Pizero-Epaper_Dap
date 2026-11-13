@@ -1704,7 +1704,7 @@ def display_worker():
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
                 output_icon = playback_mode_icons.get(output_icon_name)
                 if output_icon:
-                    image.paste(output_icon, (170, 4))
+                    image.paste(output_icon, (168, 4))
                 # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
                 # 取得不能("--%")のときは空欄にする。出力アイコンと重ならないよう右寄せ。
                 if time.time() - volume_changed_at < 5.0:
@@ -1713,8 +1713,9 @@ def display_worker():
                     battery_pct, _ = get_battery_info()
                     slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
                 if slot_str:
-                    slot_x = max(188, 250 - font_main.getlength(slot_str))
-                    draw.text((slot_x, 2), slot_str, font=font_main, fill=0)
+                    # 左端固定(VOL/BATで文字幅が変わっても位置が動かない)。
+                    # 最長の"VOL: 100%"≈62pxでx=248に収まる。
+                    draw.text((186, 2), slot_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
