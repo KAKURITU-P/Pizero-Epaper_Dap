@@ -130,8 +130,9 @@ if [[ -e /dev/i2c-3 ]]; then
     echo "I2C bus 3 を検出しました。"
 else
     echo "警告: I2C bus 3 が見つかりません。バッテリー残量表示が '--%' になります。"
-    echo "/boot/firmware/config.txt に以下を追加して再起動してください:"
-    echo "  dtparam=i2c3=on"
+    echo "/boot/firmware/config.txt に以下のいずれかを追加して再起動してください:"
+    echo "  dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4  (GPIO23/4ビットバング: 回路図のHAT配線)"
+    echo "  dtparam=i2c3=on                                           (ハードI2C bus 3: 配線が別の場合)"
     echo "(raspi-config の I2C 有効化は bus 1 のみ対象です)"
 fi
 

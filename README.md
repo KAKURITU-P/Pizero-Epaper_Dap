@@ -115,7 +115,13 @@ sudo systemctl start dap.service
 sudo systemctl status battery-monitor.service --no-pager
 ```
 
-セットアップでは `battery-monitor.service` も自動起動に登録します。バッテリー残量表示と低電圧時の安全停止には、I2C bus 3 上の MCP3425 (アドレス `0x68`) と既定の分圧回路が必要です。**I2C bus 3 は raspi-config の I2C 有効化では有効にならないため、`/boot/firmware/config.txt` に `dtparam=i2c3=on` を追加して再起動してください**。未接続・読み取り失敗時は残量表示が `--%` になります。
+セットアップでは `battery-monitor.service` も自動起動に登録します。バッテリー残量表示と低電圧時の安全停止には、I2C bus 3 上の MCP3425 (アドレス `0x68`) と既定の分圧回路が必要です。**I2C bus 3 は raspi-config の I2C 有効化では有効にならないため、`/boot/firmware/config.txt` に追加して再起動してください**。標準HATの配線(回路図.pdf: MCP3425 は GPIO23/4 接続)では次の行を使います:
+
+```
+dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4
+```
+
+GPIO ピンをハード I2C bus 3 に配線した場合は `dtparam=i2c3=on` で代用できます。未接続・読み取り失敗時は残量表示が `--%` になります。
 
 APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。Bluetoothの標準セットアップは SBC 対応です。AAC が必要な場合は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。AACビルドは任意で、Pi上で時間がかかります。
 
