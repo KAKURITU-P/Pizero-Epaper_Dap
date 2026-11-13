@@ -352,7 +352,9 @@
             const folderPath = parentPath ? `${parentPath}/${name}` : name;
             const details = document.createElement("details");
             details.dataset.path = folderPath;
-            details.open = hasSavedFolderState ? openFolders.has(folderPath) : true;
+            // 初回表示は折りたたみ。再レンダリング時(登録/解除の後など)は
+            // 直前まで開いていたフォルダの状態を引き継ぐ。
+            details.open = hasSavedFolderState ? openFolders.has(folderPath) : false;
             const summary = document.createElement("summary"); summary.textContent = `[F] ${name}`;
             details.append(summary); container.append(details);
             renderTree(child, details, folderPath);
