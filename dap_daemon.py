@@ -3813,7 +3813,7 @@ def on_btn_down_action():
 def on_btn_prev():
     if not debounce("btn_prev"): return
     if exit_cat_clock_if_needed(): return
-    global current_track_idx, eq_cursor, selected_album
+    global current_screen, current_track_idx, eq_cursor, selected_album
     with state_lock:
         reset_inactivity_timer()
 
@@ -3876,12 +3876,23 @@ btn_prev        = Button(12, bounce_time=BOUNCE_SEC)
 btn_next        = Button(16, bounce_time=BOUNCE_SEC)
 btn_play_back   = Button(20, bounce_time=BOUNCE_SEC)
 
-btn_up_act.when_pressed      = on_btn_up_action
-btn_down_act.when_pressed    = on_btn_down_action
-btn_menu_select.when_pressed = on_btn_menu_or_select
-btn_prev.when_pressed        = on_btn_prev
-btn_next.when_pressed        = on_btn_next
-btn_play_back.when_pressed   = on_btn_play_or_back
+# コールバック内で例外が飛ぶとgpiozeroの処理スレッドごと落ちて
+# 以後の全ボタン入力が死ぬため、個別に捕捉してログだけ残す。
+def safe_button(handler):
+    def wrapper():
+        try:
+            handler()
+        except Exception as error:
+            print(f"Button handler error ({handler.__name__}): {error}")
+    wrapper.__name__ = handler.__name__
+    return wrapper
+
+btn_up_act.when_pressed      = safe_button(on_btn_up_action)
+btn_down_act.when_pressed    = safe_button(on_btn_down_action)
+btn_menu_select.when_pressed = safe_button(on_btn_menu_or_select)
+btn_prev.when_pressed        = safe_button(on_btn_prev)
+btn_next.when_pressed        = safe_button(on_btn_next)
+btn_play_back.when_pressed   = safe_button(on_btn_play_or_back)
 
 # --- 11. メインループ ---
 def handle_track_completion():
