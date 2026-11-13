@@ -1687,18 +1687,20 @@ def display_worker():
                 state_str = "> PLAY" if playing else "|| PAUSE"
                 draw.text((8, 2), state_str, font=font_main, fill=0)
 
-                # 中間要素(アイコン/タイマー)を state と BAT/VOL スロットの間に
-                # 等間隔で配置する。BAT/VOLは左端186固定で位置が動かない。
-                # 要素が少ないときは余白が各ギャップに均等配分されて広がる。
-                middle = []
+                # トップ行はすべて固定幅スロット。再生/停止の違いやタイマー値の
+                # 変化で後続要素の位置が動かないようにする。
+                #  [state 8-64] [shuffle 66-83] [repeat 88-105]
+                #  [timer 112-158: 最大6文字 T:1H59] [icon 162-179] [BAT/VOL 188-]
+                state_str = "> PLAY" if playing else "|| PAUSE"
+                draw.text((8, 2), truncate_by_width(state_str, font_main, 56), font=font_main, fill=0)
                 if is_shuffle and "shuffle" in playback_mode_icons:
-                    middle.append(playback_mode_icons["shuffle"])
+                    image.paste(playback_mode_icons["shuffle"], (66, 4))
                 if repeat_mode == 1 and "repeat_one" in playback_mode_icons:
-                    middle.append(playback_mode_icons["repeat_one"])
+                    image.paste(playback_mode_icons["repeat_one"], (88, 4))
                 elif repeat_mode == 2 and "repeat_all" in playback_mode_icons:
-                    middle.append(playback_mode_icons["repeat_all"])
+                    image.paste(playback_mode_icons["repeat_all"], (88, 4))
                 if timer_str:
-                    middle.append(timer_str.strip())
+                    draw.text((112, 2), truncate_by_width(timer_str.strip(), font_main, 46), font=font_main, fill=0)
                 if output_mode == "USBOTG":
                     output_icon_name = "usb"
                 elif output_mode == "PWM":
@@ -1706,40 +1708,20 @@ def display_worker():
                 else:
                     codec = get_bt_codec_info().lower()
                     output_icon_name = codec if codec in {"aac", "sbc"} else "other"
-                if output_icon_name in playback_mode_icons:
-                    middle.append(playback_mode_icons[output_icon_name])
-
-                slot_str = ""
+                output_icon = playback_mode_icons.get(output_icon_name)
+                if output_icon:
+                    image.paste(output_icon, (162, 4))
+                # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
+                # 取得不能("--%")のときは空欄にする。
                 if time.time() - volume_changed_at < 5.0:
                     slot_str = f"VOL: {int(cur_vol * 100)}%"
                 else:
                     battery_pct, _ = get_battery_info()
                     slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
-
-                state_end = 8 + font_main.getlength(state_str)
-                widths = [
-                    min(50.0, font_main.getlength(m)) if isinstance(m, str) else m.width
-                    for m in middle
-                ]
-                min_gap = 5.0
-                if middle:
-                    span = 186 - 5 - state_end - sum(widths)
-                    gap = span / (len(middle) + 1)
-                    if gap < min_gap:
-                        gap = min_gap  # 空きが足りないときは詰めて配置
-                    x = state_end + gap
-                    for m, w in zip(middle, widths):
-                        if x + w > 180:  # BAT/VOLスロット(186-)に食い込む要素は省略
-                            break
-                        if isinstance(m, str):
-                            draw.text((x, 2), truncate_by_width(m, font_main, 50), font=font_main, fill=0)
-                        else:
-                            image.paste(m, (int(x), 4))
-                        x += w + gap
                 if slot_str:
                     # 左端固定(VOL/BATで文字幅が変わっても位置が動かない)。
-                    # 最長の"VOL: 100%"≈62pxでx=248に収まる。
-                    draw.text((186, 2), slot_str, font=font_main, fill=0)
+                    # 最長の"VOL: 100%"≈62pxでx=250ちょうどに収まる。
+                    draw.text((188, 2), slot_str, font=font_main, fill=0)
                 draw.line([(0, 18), (250, 18)], fill=0)
 
                 if pl and track_idx < len(pl):
