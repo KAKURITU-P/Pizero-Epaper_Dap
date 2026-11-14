@@ -683,6 +683,8 @@ def _build_status():
         "soc_temp_c": read_soc_temperature(),
         "mem_text": mem_text,
         "system_text": system_text,
+        "load1": load1,
+        "uptime_text": uptime_text,
         "wifi_signal": wifi_signal,
         "ap_active": ap_is_active(),
         "wifi_ssid": wifi_ssid if wifi_ssid and wifi_ssid != "--" else "未接続",
