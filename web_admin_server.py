@@ -588,6 +588,64 @@ def save_favorite_order(relative_paths):
     return {"favorites": relative_paths}
 
 
+def read_soc_temperature():
+    try:
+        return round(int(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()) / 1000, 1)
+    except (OSError, ValueError):
+        return None
+
+
+def read_memory_text():
+    try:
+        total = available = None
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            key, _, rest = line.partition(":")
+            if key == "MemTotal":
+                total = int(rest.strip().split()[0]) * 1024
+            elif key == "MemAvailable":
+                available = int(rest.strip().split()[0]) * 1024
+        if not total or available is None:
+            return None
+        used = max(0, total - available)
+        mb = 1024 * 1024
+        return f"{round(used / mb)} MB / {round(total / mb)} MB ({round(used * 100 / total)}%)"
+    except (OSError, ValueError, ZeroDivisionError):
+        return None
+
+
+def read_load1():
+    try:
+        return round(float(Path("/proc/loadavg").read_text().split()[0]), 2)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def read_uptime_text():
+    try:
+        seconds = int(float(Path("/proc/uptime").read_text().split()[0]))
+    except (OSError, ValueError, IndexError):
+        return None
+    minutes, _ = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}日{hours}時間"
+    if hours:
+        return f"{hours}時間{minutes}分"
+    return f"{minutes}分"
+
+
+def read_wifi_signal():
+    try:
+        for line in Path("/proc/net/wireless").read_text().splitlines():
+            if line.lstrip().startswith("wlan0:"):
+                signal = float(line.split()[3].rstrip("."))
+                return f"{signal:.0f} dBm"
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def _build_status():
     try:
         storage = shutil.disk_usage("/home/pi/music")
@@ -611,7 +669,21 @@ def _build_status():
     ip_result = command_output(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"])
     ip_match = re.search(r"\binet\s+(\d+(?:\.\d+){3})/", ip_result)
     codec_info = get_bluetooth_codec(bluetooth_devices)
+    mem_text = read_memory_text()
+    load1 = read_load1()
+    uptime_text = read_uptime_text()
+    system_text = " / ".join(
+        part for part in (
+            f"負荷 {load1}" if load1 is not None else None,
+            f"稼働 {uptime_text}" if uptime_text else None,
+        ) if part
+    ) or None
+    wifi_signal = read_wifi_signal()
     return {
+        "soc_temp_c": read_soc_temperature(),
+        "mem_text": mem_text,
+        "system_text": system_text,
+        "wifi_signal": wifi_signal,
         "ap_active": ap_is_active(),
         "wifi_ssid": wifi_ssid if wifi_ssid and wifi_ssid != "--" else "未接続",
         "wifi_ip": ip_match.group(1) if ip_match else "—",
