@@ -9,3 +9,5 @@ play_data.json
 resume.json
 settings.json
 dap_daemon.py.backup*
+# AP設定(ローカル専用・更新で保護)
+ap_config.json

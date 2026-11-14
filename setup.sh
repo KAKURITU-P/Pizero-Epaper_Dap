@@ -78,14 +78,7 @@ python3 "$PATCHER" "$EPD_CONFIG"
 echo "=== 音楽フォルダーと AP 設定を確認 ==="
 mkdir -p "$HOME/music"
 if [[ ! -f "$DAP_DIR/ap_config.json" ]]; then
-    cat >"$DAP_DIR/ap_config.json" <<'EOF'
-{
-  "ssid": "PiZero-DAP",
-  "password": "dap-connect-1234",
-  "country": "JP",
-  "channel": 6
-}
-EOF
+    cp "$DAP_DIR/ap_config.json.sample" "$DAP_DIR/ap_config.json"
 fi
 chmod 600 "$DAP_DIR/ap_config.json"
 echo "AP設定: $DAP_DIR/ap_config.json (初期パスワードは必ず変更してください)"

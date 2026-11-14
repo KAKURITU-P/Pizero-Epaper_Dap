@@ -257,6 +257,7 @@ def github_update_worker():
             stashed_result = run_git([
                 "stash", "push", "--include-untracked",
                 "-m", "DAP local changes before GitHub update",
+                "--", ".", ":(exclude)ap_config.json",
             ])
             if stashed_result.returncode != 0:
                 detail = (stashed_result.stderr or stashed_result.stdout or "ローカル変更を退避できませんでした").strip()[-180:]

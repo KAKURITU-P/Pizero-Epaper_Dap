@@ -64,6 +64,26 @@ for _path in (BASE_DIR, "/home/pi/dap"):
     if _path and _path not in sys.path:
         sys.path.append(_path)
 
+# --- AP設定ファイルの既定値補完(git更新等で消えた場合の保険) ---
+# ap_config.jsonはローカル専用ファイル(.gitignore対象)なので更新では
+# 変更されないが、過去の更新で削除された環境のために起動時に補完する。
+AP_CONFIG_PATH = os.path.join(BASE_DIR, "ap_config.json")
+
+def ensure_ap_config():
+    if os.path.exists(AP_CONFIG_PATH):
+        return
+    try:
+        default_ap = {"ssid": "PiZero-DAP", "password": "dap-connect-1234",
+                      "country": "JP", "channel": 6}
+        with open(AP_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(default_ap, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+        print("ap_config.json が見つからないため既定値で作成しました(要変更)")
+    except OSError as error:
+        print(f"ap_config.json 作成失敗: {error}")
+
+ensure_ap_config()
+
 from battery_utils import get_battery_info, get_battery_percent  # noqa: E402
 from audio_device_utils import (  # noqa: E402
     asoundrc_uses_usb_otg,
@@ -1560,6 +1580,7 @@ def _github_update_worker():
             stashed_result = run_git([
                 "stash", "push", "--include-untracked",
                 "-m", "DAP local changes before GitHub update",
+                "--", ".", ":(exclude)ap_config.json",
             ])
             if stashed_result.returncode != 0:
                 detail = (stashed_result.stderr or stashed_result.stdout or "ローカル変更を退避できませんでした").strip()[-180:]
