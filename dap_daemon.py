@@ -3081,7 +3081,7 @@ def update_menu_items(reset_cursor=True):
     elif current_screen == "MENU_SYS":
         add("../ (戻る)", "back", ("MENU_TOP", None))
         add("接続設定", "open_conn")
-        add("電源", "open_power")
+        add("電源メニュー", "open_power")
         add("GitHubから更新", "github_update")
         add("ライセンス表示", "license")
         if is_clock_unlocked or is_eq_unlocked:
