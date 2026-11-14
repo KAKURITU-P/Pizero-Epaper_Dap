@@ -1794,7 +1794,8 @@ def display_worker():
                 elif scr == "MENU_BT_SCAN": header_text = "Bluetooth > 新規検索"
                 elif scr == "MENU_WIFI": header_text = "接続設定 > Wi-Fi"
                 elif scr == "MENU_CONN": header_text = "メニュー > 接続設定"
-                elif scr == "MENU_OUTPUT": header_text = "接続設定 > 出力先設定"
+                elif scr == "MENU_OUTPUT": header_text = "再生設定 > 出力先設定"
+                elif scr == "MENU_POWER": header_text = "電源メニュー"
                 elif scr == "MENU_SLEEP": header_text = "再生設定 > スリープタイマー"
 
                 draw.text((8, 2), header_text, font=font_main, fill=0)
