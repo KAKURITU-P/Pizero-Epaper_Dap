@@ -8,7 +8,7 @@
   <style>
     :root { font-family: system-ui, -apple-system, "Noto Sans JP", sans-serif; color: #1c1c1c; background: #f2f2f2; }
     body { margin: 0; }
-    header { background: #212121; color: white; padding: 18px max(18px, calc((100vw - 980px) / 2)); }
+    header { background: #e2e2e2; color: #1c1c1c; padding: 18px max(18px, calc((100vw - 980px) / 2)); }
     header h1 { margin: 0; font-size: 1.35rem; }
     main { max-width: 980px; margin: 18px auto; padding: 0 14px 30px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
     section { background: white; border: 1px solid #cfcfcf; border-radius: 2px; padding: 16px; }
@@ -117,6 +117,7 @@
     }
     @media (prefers-color-scheme: dark) {
       :root { color: #e6e6e6; background: #141414; }
+      header { background: #212121; color: #e6e6e6; }
       section { background: #1d1d1d; border-color: #3a3a3a; }
       .status-item, .favorite-row, .favorite-tree details { background: #262626; }
       .favorite-tree details { border-color: #4a4a4a; }
