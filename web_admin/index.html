@@ -28,7 +28,8 @@
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 9px; }
     .status-item { background: #f4f7f9; border: 1px solid #e0e6eb; border-radius: 2px; padding: 10px; }
     .status-item small { display: block; color: #64727d; }
-    .status-item strong { overflow-wrap: anywhere; }
+    .status-item strong { overflow-wrap: anywhere; white-space: pre-line; }
+    .status-item.wide { grid-column: span 2; }
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
     #qr { width: 150px; height: 150px; image-rendering: pixelated; background: white; border: 1px solid #ddd; }
     .network-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
@@ -245,8 +246,8 @@
         const loadText = s.load1 != null ? `負荷 ${s.load1}` : null;
         const socLoad = [socTemp, loadText].filter(Boolean).join(" / ") || null;
         const btConnected = devices !== "なし";
-        for (const [label, value] of [
-          ...(s.ap_active ? [["APモード", "ON"]] : [["Wi-Fi", `${s.wifi_ssid} · ${s.wifi_ip}${s.wifi_signal ? ` ・ ${s.wifi_signal}` : ""}`]]),
+        for (const [label, value, wide] of [
+          ...(s.ap_active ? [["APモード", "ON"]] : [["Wi-Fi", [s.wifi_ssid, s.wifi_ip, s.wifi_signal || "—"].join("\n"), true]]),
           ["バッテリー", battery],
           ["音楽ストレージ", storage],
           ...(socLoad ? [["SoC温度・使用率", socLoad]] : []),
@@ -255,7 +256,7 @@
           ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`],
           ...(btConnected ? [["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]] : []),
         ]) {
-          const item = document.createElement("div"); item.className = "status-item";
+          const item = document.createElement("div"); item.className = "status-item" + (wide ? " wide" : "");
           const small = document.createElement("small"); small.textContent = label;
           const strong = document.createElement("strong"); strong.textContent = value;
           item.append(small, strong); $("status").append(item);
