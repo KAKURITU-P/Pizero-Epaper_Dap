@@ -237,7 +237,24 @@
         const storage = s.storage ? `${size(s.storage.used)} / ${size(s.storage.total)} (${s.storage.percent}%)` : "取得できません";
         $("status").innerHTML = "";
         const devices = (s.bluetooth_devices || "").replace(/^Device\s+[0-9A-Fa-f:]{17}\s*/gm, "").trim() || "なし";
-        for (const [label, value] of [["Wi-Fi", `${s.wifi_ssid} · ${s.wifi_ip}${s.wifi_signal ? ` ・ ${s.wifi_signal}` : ""}`], ["APモード", s.ap_active ? "ON" : "OFF"], ["バッテリー", battery], ["音楽ストレージ", storage], ["SoC温度", s.soc_temp_c != null ? `${s.soc_temp_c}°C` : "—"], ["メモリ", s.mem_text || "—"], ["負荷/稼働", s.system_text || "—"], ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`], ["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]]) {
+        // 状態カードは「今その瞬間に意味のあるもの」だけを表示する。
+        //  - APモードON  : Wi-Fi(クライアント情報)は非表示、APモードを表示
+        //  - APモードOFF : Wi-Fiを表示、APモード(OFFと表示するだけ)は非表示
+        //  - BT未接続    : BTコーデック/BlueALSA(未接続・unknownになるだけ)は非表示
+        const socTemp = s.soc_temp_c != null ? `${s.soc_temp_c}°C` : null;
+        const loadText = s.load1 != null ? `負荷 ${s.load1}` : null;
+        const socLoad = [socTemp, loadText].filter(Boolean).join(" / ") || null;
+        const btConnected = devices !== "なし";
+        for (const [label, value] of [
+          ...(s.ap_active ? [["APモード", "ON"]] : [["Wi-Fi", `${s.wifi_ssid} · ${s.wifi_ip}${s.wifi_signal ? ` ・ ${s.wifi_signal}` : ""}`]]),
+          ["バッテリー", battery],
+          ["音楽ストレージ", storage],
+          ...(socLoad ? [["SoC温度・使用率", socLoad]] : []),
+          ["稼働時間", s.uptime_text || "—"],
+          ["メモリ", s.mem_text || "—"],
+          ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`],
+          ...(btConnected ? [["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]] : []),
+        ]) {
           const item = document.createElement("div"); item.className = "status-item";
           const small = document.createElement("small"); small.textContent = label;
           const strong = document.createElement("strong"); strong.textContent = value;
