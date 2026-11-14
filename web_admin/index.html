@@ -171,14 +171,15 @@
         <p id="github-update-message" class="message"></p>
       </section>
 
-      <section class="secret-photo" aria-hidden="true">
-        <h2>おまけ</h2>
+      <section class="secret-photo">
+        <h2>おまけ画像（リリースより）</h2>
         <img
           src="/api/latest-release-image"
-          alt=""
+          alt="最新リリースのおまけ画像"
           data-fallback="/web.png"
           onerror="if (this.dataset.fallback) { const fallback = this.dataset.fallback; delete this.dataset.fallback; this.src = fallback; }"
         >
+        <p class="muted"><a href="https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/latest" target="_blank" rel="noopener">出典: GitHubの最新リリース</a></p>
       </section>
     </div>
 
