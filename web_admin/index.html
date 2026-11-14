@@ -78,7 +78,12 @@
       justify-self: start;
     }
     .drag-handle:active { cursor: grabbing; }
-    .favorite-order-row.dragging { opacity: .45; box-shadow: 0 0 0 2px #9db4c4; }
+    .favorite-order-row.dragging {
+      opacity: .92;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, .35);
+      position: relative;
+      z-index: 2;
+    }
     .favorite-tree { gap: 5px; }
     .favorite-tree details {
       margin: 0;
@@ -268,6 +273,45 @@
             if (name) name.textContent = `${i + 1}. ${name.textContent.replace(/^\d+\.\s*/, "")}`;
           });
         };
+        // ドラッグ中の行をポインタに追従させつつ、リスト端では自動スクロールする。
+        let dragPointerY = null;
+        let dragLoopRunning = false;
+        const reorderRows = (dragRow, clientY) => {
+          const rows = [...orderList.querySelectorAll(".favorite-order-row")].filter(item => item !== dragRow);
+          const index = rows.filter(item => {
+            const rect = item.getBoundingClientRect();
+            return clientY > rect.top + rect.height / 2;
+          }).length;
+          if (index < rows.length) rows[index].before(dragRow);
+          else if (rows.length) rows[rows.length - 1].after(dragRow);
+        };
+        const followPointer = (dragRow, clientY) => {
+          // 行をtransformでポインタに追従させ「掴んで運ぶ」見た目にする。
+          const grab = dragRow._grabOffsetY || 0;
+          const applied = parseFloat(dragRow.dataset.translateY || "0");
+          const naturalTop = dragRow.getBoundingClientRect().top - applied;
+          const ty = clientY - grab - naturalTop;
+          dragRow.dataset.translateY = ty;
+          dragRow.style.transform = `translateY(${ty}px)`;
+        };
+        const autoScrollStep = () => {
+          const dragRow = orderList.querySelector(".favorite-order-row.dragging");
+          if (!dragRow || dragPointerY === null) { dragLoopRunning = false; return; }
+          const crect = orderList.getBoundingClientRect();
+          const edge = 28;
+          let delta = 0;
+          if (dragPointerY < crect.top + edge) {
+            delta = -Math.min(14, Math.max(3, (crect.top + edge - dragPointerY) / 3));
+          } else if (dragPointerY > crect.bottom - edge) {
+            delta = Math.min(14, Math.max(3, (dragPointerY - (crect.bottom - edge)) / 3));
+          }
+          if (delta) {
+            orderList.scrollTop += delta;
+            reorderRows(dragRow, dragPointerY);
+            followPointer(dragRow, dragPointerY);
+          }
+          requestAnimationFrame(autoScrollStep);
+        };
         if (!result.favorites.length) {
           orderList.innerHTML = '<div class="muted">お気に入り曲がありません。</div>';
         } else {
@@ -282,14 +326,9 @@
             handle.title = "ドラッグして並び替え";
             const onDragMove = event => {
               if (!row.classList.contains("dragging")) return;
-              // 指先/カーソルのYがどの行の中心を超えたかで挿入位置を決める。
-              const rows = [...orderList.querySelectorAll(".favorite-order-row")].filter(item => item !== row);
-              const index = rows.filter(item => {
-                const rect = item.getBoundingClientRect();
-                return event.clientY > rect.top + rect.height / 2;
-              }).length;
-              if (index < rows.length) rows[index].before(row);
-              else if (rows.length) rows[rows.length - 1].after(row);
+              dragPointerY = event.clientY;
+              reorderRows(row, dragPointerY);
+              followPointer(row, dragPointerY);
             };
             // pointermove/pointerupはdocumentで受ける。setPointerCaptureに
             // 依存すると環境によってcaptureが効かず、指の下の要素にイベントが
@@ -309,6 +348,13 @@
               if (dragListeners) return; // 多重開始防止
               event.preventDefault();
               row.classList.add("dragging");
+              // 掴んだ位置から行上端までの距離を記録(ポインタ追従に使用)
+              row._grabOffsetY = event.clientY - row.getBoundingClientRect().top;
+              dragPointerY = event.clientY;
+              if (!dragLoopRunning) {
+                dragLoopRunning = true;
+                requestAnimationFrame(autoScrollStep);
+              }
               document.addEventListener("pointermove", onDragMove);
               document.addEventListener("pointerup", onDragEnd);
               document.addEventListener("pointercancel", onDragEnd);
@@ -319,6 +365,10 @@
             function finishDrag() {
               if (!row.classList.contains("dragging")) return;
               row.classList.remove("dragging");
+              row.style.transform = "";
+              delete row.dataset.translateY;
+              dragPointerY = null;
+              dragLoopRunning = false;
               const paths = [...orderList.querySelectorAll(".favorite-order-row")].map(item => item.dataset.path);
               if (paths.join("\n") === favoriteOrder.join("\n")) return; // 変化なし
               favoriteOrder = paths;
