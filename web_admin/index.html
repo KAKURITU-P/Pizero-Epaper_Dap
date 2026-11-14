@@ -248,13 +248,13 @@
         const btConnected = devices !== "なし";
         for (const [label, value, wide] of [
           ...(s.ap_active ? [["APモード", "ON"]] : [["Wi-Fi", [s.wifi_ssid, s.wifi_ip, s.wifi_signal || "—"].join("\n"), true]]),
-          ["バッテリー", battery],
-          ["音楽ストレージ", storage],
-          ...(socLoad ? [["SoC温度・使用率", socLoad]] : []),
-          ["稼働時間", s.uptime_text || "—"],
-          ["メモリ", s.mem_text || "—"],
           ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`],
           ...(btConnected ? [["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]] : []),
+          ["バッテリー", battery],
+          ["稼働時間", s.uptime_text || "—"],
+          ...(socLoad ? [["SoC温度・使用率", socLoad]] : []),
+          ["メモリ", s.mem_text || "—"],
+          ["音楽ストレージ", storage],
         ]) {
           const item = document.createElement("div"); item.className = "status-item" + (wide ? " wide" : "");
           const small = document.createElement("small"); small.textContent = label;
