@@ -246,10 +246,10 @@
         const loadText = s.load1 != null ? `負荷 ${s.load1}` : null;
         const socLoad = [socTemp, loadText].filter(Boolean).join(" / ") || null;
         const btConnected = devices !== "なし";
-        for (const [label, value, wide] of [
+        const btState = { active: "稼働中", inactive: "停止" }[s.bluetooth] || "—";        const bluealsaState = { active: "稼働中", inactive: "停止" }[s.bluealsa] || s.bluealsa;        for (const [label, value, wide] of [
           ...(s.ap_active ? [["APモード", "ON"]] : [["Wi-Fi", [s.wifi_ssid, s.wifi_ip, s.wifi_signal || "—"].join("\n"), true]]),
-          ["Bluetooth", `${s.bluetooth} · 無線 ${s.bluetooth_powered}`],
-          ...(btConnected ? [["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", s.bluealsa]] : []),
+          ["Bluetooth", `${btState} · 無線 ${s.bluetooth_powered}`],
+          ...(btConnected ? [["接続中のBT機器", devices], ["BTコーデック", s.codec_info || "取得待ち"], ["BlueALSA", bluealsaState]] : []),
           ["バッテリー", battery],
           ["稼働時間", s.uptime_text || "—"],
           ...(socLoad ? [["SoC温度・使用率", socLoad]] : []),
