@@ -224,6 +224,10 @@ def safe_init_audio():
         else:
             frequency = 44100
         buffer_size = get_audio_buffer_size()
+        if audio_output_mode == "BT":
+            # BT再生はCPUスパイク(busctl描画・Web管理のsubprocess群)で
+            # アンダーランしやすいため、バッファに余裕を持たせる
+            buffer_size = max(buffer_size, 65536)
         pygame.mixer.init(frequency=frequency, size=-16, channels=2, buffer=buffer_size)
         set_cur_volume(volume)
         print(f"Audio initialized in [{audio_output_mode}] mode ({frequency} Hz, buffer {buffer_size}).")
@@ -954,12 +958,20 @@ def get_ip_address():
             pass
         return "未接続"
 
+_codec_cache = {"value": None, "at": 0.0}
+CODEC_CACHE_SEC = 60.0   # コーデックは接続中に変わらないため60秒キャッシュ
+
 def get_bt_codec_info():
+    global _codec_cache
     if audio_output_mode != "BT":
         return "PWM出力中"
 
     if not connected_bt_mac:
         return "未接続"
+
+    now = time.time()
+    if _codec_cache["value"] is not None and now - _codec_cache["at"] < CODEC_CACHE_SEC:
+        return _codec_cache["value"]
 
     try:
         tree = subprocess.check_output(
@@ -1001,7 +1013,10 @@ def get_bt_codec_info():
             if value_type == "s" and value.strip().startswith('"') and value.strip().endswith('"'):
                 codec = value.strip()[1:-1].strip()
                 if codec:
-                    return codec.upper()
+                    codec = codec.upper()
+                    _codec_cache["value"] = codec
+                    _codec_cache["at"] = time.time()
+                    return codec
 
     except (subprocess.SubprocessError, OSError) as error:
         print(f"BTコーデック取得エラー: {error}")
