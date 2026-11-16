@@ -1594,29 +1594,25 @@ if HAS_DBUS_AGENT:
         """AVRCP用のD-Busオブジェクトを登録してGLibループを回す(専用スレッド)"""
         poll = {"status": "", "title": ""}
         while True:
+            player = root = None
             try:
                 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
                 bus = dbus.SystemBus()
                 player = MediaPlayer1(bus, MEDIA_PLAYER_PATH)
                 root = MediaPlayerRoot(bus, player)
-                root.InterfacesAdded(MEDIA_PLAYER_PATH,
-                    {dbus.ObjectPath(MEDIA_PLAYER_PATH):
-                     {"org.bluez.MediaPlayer1": player._props()}})
                 print("AVRCP MediaPlayer1 登録完了")
-                def poll_props():
-                    status, pos, title, duration = _media_player_state()
-                    if (status, title) != (poll["status"], poll["title"]):
-                        changed = {"Status": dbus.String(status)}
-                        if title != poll["title"]:
-                            changed["Track"] = media_player_track_dict(title, duration)
-                        player.PropertiesChanged("org.bluez.MediaPlayer1", changed, [])
-                        poll["status"], poll["title"] = status, title
-                    return True   # GLibタイムアウト継続
-                GLib.timeout_add_seconds(1, poll_props)
-                GLib.MainLoop().run()
+                GLib.MainLoop().run()   # 以後ここに留まる(BlueZがGetManagedObjectsで検出)
             except Exception as error:
                 print(f"AVRCP media player error: {error}")
                 time.sleep(10)
+            finally:
+                # 再登録に備えてオブジェクトを解除(失敗していても無視)
+                for obj in (root, player):
+                    try:
+                        if obj:
+                            obj.remove_from_connection()
+                    except Exception:
+                        pass
 
     threading.Thread(target=media_player_thread, daemon=True).start()
 
