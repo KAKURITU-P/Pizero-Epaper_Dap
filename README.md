@@ -1,45 +1,73 @@
 # Pizero-Epaper_Dap
 
-Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使用した自作ポータブルデジタルオーディオプレーヤー（DAP）。
+Raspberry Pi Zero W / 2 W と 2.13 インチ電子ペーパー（Waveshare 2.13inch e-Paper HAT V4）を使用した自作ポータブルデジタルオーディオプレーヤー（DAP）。
 
-電子ペーパーによる省電力・高コントラストな画面表示と、GPIO 直結物理ボタンによるスムーズな操作性を実現しています。
+電子ペーパーによる省電力・高コントラストな画面と GPIO 直結の物理ボタンで操作する、再生に集中できる小型プレーヤーです。
 
----
-## 最新の更新／修正／機能追加などは[最新のリリース](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/)を確認してください
-
-## 主な特徴
-
-- **電子ペーパー表示（Waveshare 2.13inch V4）**
-  - **PLAY 画面:** 曲名、アーティスト名、音量（%）、再生/一時停止状態、再生時間を表示
-  - **プログレスバー:** 8 段階の部分更新（Partial Refresh）によるスムーズなプログレス表示
-  - **残像対策:** メニュー操作や画面切り替え時は全画面リフレッシュ（Full Refresh）を実行
-  - **テキスト自動調整:** 画面幅（230px）を超える長文の曲名・アーティスト名は自動的に末尾を `…` に省記
-- **操作性 & 再生機能**
-  - GPIO 直結 6 ボタン操作（上 / 下 / メニュー・決定 / 戻る・再生一時停止 / 前曲 / 次曲）
-  - **スマート曲戻し:** 再生開始から 3 秒以上経過時は曲の頭出し（00:00）、3 秒未満または停止中は前の曲へ移動
-  - mutagen による MP3 / FLAC / WAV 等の ID3 タグ（アーティスト名）自動解析
-  - シャッフル再生機能対応
-  - 隠し機能（時計画面・EQ）の解放状態とEQ調整値を `settings.json` に保存し、再起動後に復元
-  - アルバム内のお気に入り直下に再生履歴を表示（最近再生した最大 30 曲、`play_data.json` に保存）
-  - 自動スリープ機能（メニュー画面で 10 秒間無操作の場合、PLAY 画面へ自動復帰）
-- **システム・省電力・通信管理**
-  - **rfkill 制御:** UI 上から Wi-Fi および Bluetooth の ON/OFF を個別切り替え可能
-  - **Bluetooth 音声出力:** `bluetoothctl` による周辺機器の検索、選択した機器のペアリング・接続に対応
-  - UI 上での IP アドレス確認、曲ライブラリの再読み込み、再起動、シャットダウン、解放済み隠し機能の削除操作に対応
+最新の更新内容は[リリース一覧](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/releases/)を参照してください。
 
 ---
 
-## ハードウェア構成(制作者の環境)
+## 特徴
+
+### 表示（e-Paper 2.13inch V4）
+
+- **PLAY 画面**：曲名・アーティスト名・音量（%）・再生状態・再生時間・バッテリー残量を表示
+- **プログレスバー**：8 段階の部分更新（Partial Refresh）でスムーズに描画
+- **残像対策**：メニュー操作や画面切替時は全画面リフレッシュ（Full Refresh）
+- **テキスト自動調整**：画面幅を超える長い曲名・アーティスト名は末尾を `…` に省略
+
+### 再生
+
+- MP3 / FLAC / WAV 等に対応（mutagen によるタグ解析）
+- シャッフル再生・お気に入り（★マーク。次曲ボタン長押しでトグル）
+- **スマート曲戻し**：再生開始から 3 秒以上経過していれば曲の頭出し、3 秒未満なら前の曲へ
+- 再生履歴（最大 30 曲）をアルバム内のお気に入りの下に表示
+- 無操作 10 秒でメニューから PLAY 画面へ自動復帰
+
+### メニュー構成
+
+| 階層 | 内容 |
+| :--- | :--- |
+| **お気に入り** | 最上位の先頭に配置。ドラッグ&ドロップで並べ替え（Web 管理画面） |
+| **再生設定** | 出力先（PWM / USB OTG / BT）、シャッフル・リピート |
+| **接続設定** | Bluetooth設定、APモード、Wi-Fi の ON/OFF |
+| **システム設定** | 電源メニュー（再起動・シャットダウン）、曲ライブラリ再読み込み、隠し機能 |
+
+### Bluetooth 音声
+
+- **AVRCP 対応**：BT イヤホン側の再生/一時停止・曲送り・曲戻しボタンをそのまま受付（BlueZ が生成する AVRCP uinput デバイスを監視）
+- A2DP 出力は BlueALSA 使用（標準は SBC。[AAC 対応ビルド](docs/BLUEALSA_AAC.md)も選択可）
+- ペアリング・接続は本体 UI から操作（検索 → 選択 → 接続）
+- BT 再生中はバッファ拡張とコーデックキャッシュで瞬断に耐性を持たせ、イヤホン切断時は自動再接続を試行
+
+### Web 管理画面
+
+- 音楽ライブラリの閲覧・お気に入りの**ドラッグ&ドロップ並べ替え**
+- 状態カード（Wi-Fi / Bluetooth / バッテリー / 稼働時間 / SoC 温度・負荷 / メモリ / ストレージ）
+- Wi-Fi 接続先の追加・AP 設定（QR コード表示）・音楽ファイルのアップロード（DUFS 経由）
+- AP 設定は本体の Git 更新でも初期化されないよう保護
+
+### 電源・省電力
+
+- **rfkill 制御**：Wi-Fi と Bluetooth を UI 上から個別 ON/OFF
+- **スリープタイマー**（30 分 / 1 時間 / 2 時間）
+- バッテリー残量表示と低電圧時の自動シャットダウン（MCP3425 監視サービス）
+
+---
+
+## ハードウェア構成（制作者の環境）
 
 | パーツ | 型番 / 仕様 |
 | :--- | :--- |
-| **SBC** | Raspberry Pi Zero WH |
+| **SBC** | Raspberry Pi Zero W（Zero 2 W でも動作確認済み） |
 | **OS** | Raspberry Pi OS (Trixie) |
-| **ディスプレイ** | Waveshare 2.13inch e-Paper HAT (V4) (250×122 resolution) |
-| **ボタン** | タクトスイッチ × 6 (GPIO 接続) |
-| **オーディオ出力** | ALSA アナログ出力 / USB OTG AUDIO / Bluetooth A2DP オーディオ |
+| **ディスプレイ** | Waveshare 2.13inch e-Paper HAT (V4)（250×122） |
+| **ボタン** | タクトスイッチ × 6（GPIO 接続） |
+| **バッテリー監視** | MCP3425（I2C bus 3、アドレス 0x68） |
+| **オーディオ出力** | ALSA アナログ（PWM）/ USB OTG AUDIO / Bluetooth A2DP |
 
-「接続設定」→「Bluetooth設定」→「出力先」で `PWM` → `USBOTG` → `BT` の順に切り替えます。USB OTG AUDIO は既定で ALSA の `plughw:1,0` を使用し、カード番号が異なる場合は `DAP_USB_OTG_ALSA_DEVICE` 環境変数で変更できます。
+配線は `docs/回路図.pdf` を参照してください。
 
 ### GPIO ピン割り当て
 
@@ -47,10 +75,20 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 | :--- | :--- |
 | **GPIO 22** | 音量 UP / メニューカーソル上 |
 | **GPIO 27** | 音量 DOWN / メニューカーソル下 |
-| **GPIO 5** | メニュー開く / 決定 |
-| **GPIO 20** | 再生・一時停止 / 戻る |
-| **GPIO 12** | 前の曲 (スマート曲戻し) |
-| **GPIO 16** | 次の曲 |
+| **GPIO 5** | メニューを開く / 決定 |
+| **GPIO 20** | 再生・一時停止 / 階層を戻る |
+| **GPIO 12** | 前の曲（スマート曲戻し）/ メニュー画面では階層を戻る |
+| **GPIO 16** | 次の曲 / 長押しでお気に入りトグル |
+
+### バッテリー監視の有効化
+
+I2C bus 3 は `raspi-config` では有効にならないため、`/boot/firmware/config.txt` に追加して再起動してください（標準 HAT 配線：MCP3425 は GPIO23/4 接続）。
+
+```
+dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4
+```
+
+ハード I2C bus 3 に配線した場合は `dtparam=i2c3=on` で代用できます。未接続・読み取り失敗時は残量表示が `--%` になります。
 
 ---
 
@@ -58,37 +96,35 @@ Raspberry Pi Zero WH と 2.13 インチ電子ペーパー（Waveshare）を使�
 
 ```text
 .
-├── dap_daemon.py       # DAP メイン制御デーモン (Pygame / GPIO / EPD)
-├── battery_utils.py    # バッテリー状態ファイルの読み取り
-├── audio_device_utils.py # USBオーディオデバイス検出・サンプルレート選択
-├── font_utils.py       # フォント検出と読み込み
-├── icon_utils.py       # スプライトシートからのアイコン・船画像の切り出し
-├── render_utils.py     # 表示用テキスト整形(幅合わせ省略・時間・サイズ)
-├── version_utils.py    # gitタグから表示用バージョンを取得
-├── bluealsa_utils.py   # BlueALSA / ALSA 設定生成ユーティリティ
-├── web_admin_server.py # Web管理画面 API
-├── web_admin/          # Web管理画面
-├── setup.sh            # 初回セットアップ（依存関係・ドライバー・systemd）
-├── ap_config.json      # AP の SSID / パスワード / 国コード / チャンネル
-├── tools/              # セットアップ・保守用スクリプト
-├── docs/               # Bluetooth AAC 等の追加手順
-├── waveshare_epd/      # セットアップ時に取得する Waveshare ドライバー
-├── tests/              # ユーティリティの単体テスト
-├── stereo_test.py      # L/R ステレオ位相・チャンネル確認用ツール
-├── gpio_test.py        # GPIO ボタン入力確認用テストスクリプト
-├── gpio_check.py       # GPIO ピン状態チェックツール
-├── .gitignore          # 音楽ファイル等の除外設定
-└── README.md           # 本ドキュメント
-
+├── dap_daemon.py         # DAP メイン制御デーモン（Pygame / GPIO / e-Paper / AVRCP）
+├── battery_monitor.py    # バッテリー電圧の定期記録サービス
+├── battery_utils.py      # バッテリー状態ファイルの読み取り
+├── audio_device_utils.py # USB オーディオデバイス検出・サンプルレート選択
+├── bluealsa_utils.py     # BlueALSA / ALSA 設定生成ユーティリティ
+├── font_utils.py         # フォント検出と読み込み
+├── icon_utils.py         # スプライトシートからのアイコン切り出し
+├── render_utils.py       # 表示用テキスト整形（幅合わせ省略・時間・サイズ）
+├── system_stats_utils.py # SoC 温度・負荷・メモリ等の取得
+├── network_parse_utils.py# Wi-Fi / Bluetooth / AP の状態解析
+├── version_utils.py      # git タグから表示用バージョンを取得
+├── web_admin_server.py   # Web 管理画面 API
+├── web_admin/            # Web 管理画面
+├── dbus/                 # AVRCP 用 D-Bus ポリシー
+├── setup.sh              # 初回セットアップ（依存関係・ドライバー・systemd）
+├── ap_config.json.sample # AP の既定設定（実ファイルは setup.sh が生成）
+├── tools/                # セットアップ・保守用スクリプト
+├── docs/                 # BlueALSA の追加手順・回路図
+├── tests/                # ユーティリティの単体テスト
+├── stereo_test.py        # L/R ステレオ位相・チャンネル確認用ツール
+├── gpio_test.py          # GPIO ボタン入力確認用テストスクリプト
+└── gpio_check.py         # GPIO ピン状態チェックツール
 ```
 
 ---
 
 ## セットアップ手順
 
-対応環境は Raspberry Pi Zero WH と Raspberry Pi OS (Trixie) です。アプリは `/home/pi/dap`、音楽は `/home/pi/music`、実行ユーザーは `pi` を前提とします。
-
-リポジトリを所定の場所に取得して、セットアップツールを実行します。
+対応環境は Raspberry Pi Zero W / 2 W + Raspberry Pi OS (Trixie) です。アプリは `/home/pi/dap`、音楽は `/home/pi/music`、実行ユーザーは `pi` を前提とします。
 
 ```bash
 sudo apt update
@@ -98,9 +134,9 @@ cd /home/pi/dap
 bash setup.sh
 ```
 
-`setup.sh` は依存パッケージを APT から導入し、Waveshare 2.13-inch V4 ドライバーを取得して GPIO18 電源制御パッチを適用し、制限付き sudo 設定、DAP／バッテリー／Web管理の systemd サービス、Nginxを登録します。再実行しても、既存のドライバーと AP 設定、管理画面パスワードを保持します。Pythonパッケージを `pip` でシステムに直接導入しません。
+`setup.sh` は依存パッケージの導入、Waveshare 2.13inch V4 ドライバーの取得と GPIO18 電源制御パッチの適用、制限付き sudo 設定、DAP／バッテリー監視／Web 管理の systemd サービス、Nginx、AVRCP 用 D-Bus ポリシーを登録します。再実行しても既存のドライバー・AP 設定・管理画面パスワードを保持し、Python パッケージを pip でシステムに直接導入しません。
 
-SPIとI2Cを有効化し、音楽を配置して起動します。SPI/I2Cをまだ有効にしていない場合は `sudo raspi-config` → `Interface Options` で有効にしてから再起動してください。
+SPI と I2C をまだ有効にしていない場合は `sudo raspi-config` → `Interface Options` で有効にして再起動します。
 
 ```bash
 sudo raspi-config
@@ -111,86 +147,53 @@ sudo reboot
 
 ```bash
 sudo systemctl status dap.service --no-pager
-sudo systemctl start dap.service
 sudo systemctl status battery-monitor.service --no-pager
 ```
 
-セットアップでは `battery-monitor.service` も自動起動に登録します。バッテリー残量表示と低電圧時の安全停止には、I2C bus 3 上の MCP3425 (アドレス `0x68`) と既定の分圧回路が必要です。**I2C bus 3 は raspi-config の I2C 有効化では有効にならないため、`/boot/firmware/config.txt` に追加して再起動してください**。標準HATの配線(回路図.pdf: MCP3425 は GPIO23/4 接続)では次の行を使います:
+AP を使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。
 
-```
-dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4
-```
+---
 
-GPIO ピンをハード I2C bus 3 に配線した場合は `dtparam=i2c3=on` で代用できます。未接続・読み取り失敗時は残量表示が `--%` になります。
+## 使い方
 
-APを使う前に `/home/pi/dap/ap_config.json` の初期パスワードを変更してください。Bluetoothの標準セットアップは SBC 対応です。AAC が必要な場合は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。AACビルドは任意で、Pi上で時間がかかります。
+### Bluetooth イヤホン
 
-### Web管理画面
+Wi-Fi と Bluetooth は独立して ON/OFF できます。初めて使うイヤホンは次の順で登録します。
 
-`setup.sh` は、Wi-Fi接続先の追加、AP設定の編集と接続用QRコード表示、バッテリー・音楽ストレージ・Bluetooth状態の確認、お気に入り曲の登録・解除を行うWeb管理画面も設定します。セットアップ完了時に初期パスワードが一度だけ表示されます。ユーザー名は `pi` です。パスワードを再設定する場合:
+1. イヤホンをメーカー指定の方法でペアリングモードにする（他機器に接続済みなら切断）
+2. 「接続設定」→「Bluetooth設定」→「新規デバイスの検索」→「検索開始」（約 8 秒待機）
+3. 表示されたイヤホンを選ぶ。登録済み機器は「登録済みデバイス」から再ペアリングなしで接続
+4. 「接続成功」を確認
+
+接続後は「再生設定」→「出力先」を BT に切り替えます。以後、**イヤホン側のボタンで再生/一時停止・曲送り・曲戻しが操作できます**（AVRCP 非対応機種ではボタンは使えません）。
+
+PIN 入力やパスキー確認を要求する機器は本体 UI から入力できないため接続できません。接続に失敗した場合は出力先を PWM に戻してください。
+
+> **Wi-Fi と Bluetooth の同時使用について**：2.4 GHz 帯の混雑状況により Wi-Fi の速度低下や BT 音声の途切れが起きることがあります（Pi Zero W の無線チップは Wi-Fi / BT 共存の制約があります）。再生中の大容量 Wi-Fi 通信を避けるか、Wi-Fi を 5 GHz 帯に移すか、一時的に OFF にしてください。
+
+### Web 管理画面
+
+ブラウザーで `http://<PiのIPアドレス>/` を開きます。ユーザー名は `pi`、初期パスワードはセットアップ完了時に一度だけ表示されます。再設定は次のとおりです。
 
 ```bash
 sudo htpasswd -m /etc/nginx/dap-admin.htpasswd pi
 ```
 
-Wi-Fi検索と接続は、セットアップで root 所有として配置する `/usr/local/sbin/dap-web-wifi` ヘルパー経由で実行します。sudoers ではこの専用ヘルパーだけを追加許可し、Web管理サービスにNetworkManagerの一般的な管理権限は付与しません。
-
-ブラウザーで `http://<PiのIPアドレス>/` を開きます。管理画面はHTTPで提供するため、インターネットへ公開せず、DAPに接続できる信頼したLANまたはAP内で使用してください。
-
-音楽ファイルのアップロードと削除はDUFSを使います。DUFSがインストール済みなら、`/home/pi/music`を配信し、ローカルだけで待ち受けるよう起動オプションを設定してください。管理画面の「DUFSを開く」は`/files/`へ別タブで接続します。お気に入り曲の登録・解除は管理画面から行えます。
+音楽ファイルのアップロードと削除は DUFS を使います。インストール済みなら、LAN へ直接公開せず Nginx の認証を通す次の起動オプションを推奨します。管理画面の「DUFSを開く」は `/files/` へ別タブで接続します。
 
 ```bash
 dufs --bind 127.0.0.1 --port 8000 --path-prefix /files --allow-upload --allow-delete /home/pi/music
 ```
 
-既存のDUFS systemdサービスを使っている場合は、サービスの起動引数を上記の内容に合わせてください。`--bind 127.0.0.1`でポート8000をLANへ直接公開せず、Nginxの認証を通して利用できます。追加した音楽を本体の一覧に反映するには、本体メニューの「曲ライブラリ再読み込み」を実行してください。
+追加した音楽を本体の一覧に反映するには、本体メニューの「曲ライブラリ再読み込み」を実行してください。
 
----
-
-
-## ライセンス
-
-本プロジェクトのソースコードは [MIT License](https://github.com/KAKURITU-P/Pizero-Epaper_Dap/blob/main/LICENSE.md) のもとで公開されています。
-
-
-### GPIO18 とPWM音声を併用する場合
-
-GPIO18/19をPWM音声出力に割り当てる構成では、WaveshareドライバーがGPIO18をPWR制御に使わないようにします。`setup.sh` はドライバーを取得し、`tools/patch_waveshare_epd_gpio18_pwr.py` を適用します。ドライバーを手動で更新した場合は、必要に応じて次を再実行してください。
-
-```bash
-python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/waveshare_epd/epdconfig.py
-```
-
-この設定は、画面基板がGPIO18のPWR制御なしで動作することを前提とします。
-
-### Bluetoothイヤホンの登録と接続
-
-Wi-Fi と Bluetooth は独立して ON/OFF できます。同時に使う場合、2.4 GHz 帯の混雑状況によって Wi-Fi の速度低下や Bluetooth 音声の途切れが起きることがあります。その場合は Wi-Fi を 5 GHz 帯へ移すか、片方を一時的に OFF にしてください。Bluetooth を OFF にしても Wi-Fi の状態は変わりません。
-
-初めて使うイヤホンは、次の順で登録します。
-
-1. イヤホンをケースから出すなどして、メーカー指定の方法でペアリングモードにします（スマートフォン等に接続済みなら、そちらを切断してください）。
-2. DAP の「接続設定」→「Bluetooth設定」→「新規デバイスの検索」→「検索開始」を選びます。検索中は約 8 秒待ちます。
-3. 表示されたイヤホンを選びます。登録済み機器は「登録済みデバイス」から選ぶと再ペアリングせずに接続します。
-4. 「接続成功」と表示され、イヤホンから音が出ることを確認します。
-
-検索に出ない場合は、イヤホンのペアリングモードをやり直してから再検索してください。PIN 入力やパスキー確認を要求する機器は、本体 UI から入力できないため接続できない場合があります。接続に失敗した場合は「出力先」を PWM に戻してください。Wi-Fi は接続中もそのまま利用できます。
-
-### DAP操作時のsudoパスワード
-
-`setup.sh` は、DAPサービスが使用する無線切替・Bluetooth/BlueALSA制御・アプリ再起動などに限り、パスワードなしでsudoを実行できる設定を `/etc/sudoers.d/dap` に追加します。SSHでの一般的な管理コマンド（パッケージ更新など）には引き続きパスワードが必要です。既存環境は、コード更新後に新しい権限設定を反映するため次を実行してください。
-
-```bash
-sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh
-```
-
-GitHub更新では、更新処理の前に画面の全画面更新を要求します。全画面更新時にドライバーがパネルのRSTを動作させてからBUSY状態を確認します。BUSYは入力信号のため、ソフトウェアから直接解除はできません。配線や接触不良がある場合は、接続の確認も必要です。
+管理画面は HTTP で提供するため、インターネットへ公開せず信頼できる LAN または AP 内で使用してください。
 
 ### AP モード
 
-「接続設定」→「APモード: OFF」を選ぶと、DAP が `PiZero-DAP` という WPA2 アクセスポイントを起動します。スマートフォンや PC から接続し、ネットワーク設定や対応するローカル機能には `192.168.4.1` を使用してください。AP モードはインターネット接続を提供しません。AP を OFF にすると NetworkManager を再起動し、AP 起動前の Wi-Fi の ON/OFF 状態に戻します。
+「接続設定」→「APモード: OFF」を選ぶと、DAP が `PiZero-DAP` という WPA2 アクセスポイントを起動します。スマートフォンや PC から接続し、`192.168.4.1` で管理画面等にアクセスできます（インターネット接続は提供しません）。
 
-SSID、パスワード、国コード、チャンネルは、DAP と同じディレクトリにある `ap_config.json` で設定します。初期値は `PiZero-DAP` / `dap-connect-1234` / `JP` / チャンネル `6` です。運用前にパスワードを変更してください。パスワードは印字可能な ASCII 文字で 8〜63 文字、SSID は UTF-8 で 1〜32 バイトにしてください。設定変更後に AP を再起動すると反映されます。
+SSID・パスワード・国コード・チャンネルは `ap_config.json` で設定します。初期値は `PiZero-DAP` / `dap-connect-1234` / `JP` / チャンネル `6` です。**運用前にパスワードを変更してください**。パスワードは印字可能な ASCII 文字で 8〜63 文字、SSID は UTF-8 で 1〜32 バイトです。変更後、AP を再起動すると反映されます。
 
 ```json
 {
@@ -201,15 +204,31 @@ SSID、パスワード、国コード、チャンネルは、DAP と同じディ
 }
 ```
 
-### BlueALSA手動接続の確認
+---
 
-Bluetooth音声出力にはBlueALSAを使用します。PWM/BTともALSAの`equal`経路を使用し、後段を48 kHz・ステレオ・S16_LEへ固定します。接続完了後はBluetoothの接続状態だけでなく、対象機器のA2DP用BlueALSA PCMがALSAへ公開されたことを確認してから、`.asoundrc` とPygameの音声出力を切り替えます。
+## 補足
 
-Bluetooth機器の接続は手動操作です。選択したMACアドレスの機器だけ、確認番号（パスキー）の承認を自動化します。PIN入力や未選択機器の承認、切断後のバックグラウンド自動再接続には対応していません。自動承認には `python3-dbus` と `python3-gi` が必要です。
+### GPIO18 と PWM 音声の併用
 
-Bluetooth出力と Wi-Fi は同時に利用できます。2.4 GHz 帯の混雑時は音切れが起きる場合があるため、その場合は 5 GHz Wi-Fi を使うか、Wi-Fi を一時的に OFF にしてください。
+GPIO18/19 を PWM 音声出力に使う構成では、Waveshare ドライバーが GPIO18 を PWR 制御に使わないようにします。`setup.sh` はこのパッチ（`tools/patch_waveshare_epd_gpio18_pwr.py`）を自動適用します。ドライバーを手動更新した場合は再実行してください。
 
-実機では、次のコマンドでBlueALSAの状態を確認できます。
+```bash
+python3 /home/pi/dap/tools/patch_waveshare_epd_gpio18_pwr.py /home/pi/dap/waveshare_epd/epdconfig.py
+```
+
+### DAP 操作時の sudo パスワード
+
+`setup.sh` は DAP サービスが使う無線切替・Bluetooth/BlueALSA 制御・アプリ再起動などに限り、パスワードなしの sudo を `/etc/sudoers.d/dap` に追加します。SSH での一般的な管理コマンドには引き続きパスワードが必要です。既存環境でコード更新後に権限設定を反映する場合：
+
+```bash
+sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh
+```
+
+### GitHub 更新時の全画面更新
+
+GitHub 更新では、処理の前に画面の全画面更新を要求します。配線や接触不良がある場合は、ドライバーがパネルの RST を動作させてから BUSY 状態のまま終了することがあるため、接続の確認も行ってください。
+
+### BlueALSA の状態確認
 
 ```bash
 sudo systemctl is-active bluealsa
@@ -217,13 +236,12 @@ bluetoothctl info AA:BB:CC:DD:EE:FF
 aplay -L | grep -i bluealsa
 ```
 
-`AA:BB:CC:DD:EE:FF` は実際のBluetoothイヤホンのMACアドレスに置き換えてください。
-
-必要なパッケージは次のとおりです。
-
-```bash
-sudo apt update
-sudo apt install -y bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal python3-dbus python3-gi
-
+`AA:BB:CC:DD:EE:FF` は実際の Bluetooth イヤホンの MAC アドレスに置き換えてください。Bluetooth 機器の接続は手動操作で、選択した機器のパスキー承認のみ自動化します（PIN 入力や切断後の自動再ペアリングは非対応。イヤホン側の自動再接続には対応）。必要なパッケージは `bluetooth bluez bluez-alsa-utils alsa-utils libasound2-plugin-equal python3-dbus python3-gi` です。
 
 Raspbian Trixie の標準 BlueALSA は SBC のみです。AAC 対応ビルドの導入と標準版への戻し方は [SBC / AAC 対応 BlueALSA](docs/BLUEALSA_AAC.md) を参照してください。
+
+---
+
+## ライセンス
+
+本プロジェクトのソースコードは [MIT License](LICENSE.md) のもとで公開されています。
