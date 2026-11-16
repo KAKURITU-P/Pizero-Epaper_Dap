@@ -1627,6 +1627,9 @@ AVRCP_KEY_ACTIONS = {
     164: "toggle",  # KEY_PLAYPAUSE
     165: "prev",    # KEY_PREVIOUSSONG
     166: "pause",   # KEY_STOPCD
+    128: "pause",   # KEY_STOP
+    200: "toggle",  # KEY_PLAY(単押しで再生側を送る機種)
+    201: "pause",   # KEY_PAUSE
 }
 
 
@@ -1678,6 +1681,9 @@ def avrcp_input_thread():
                 elif action == "pause":
                     print("AVRCP: イヤホン停止 受信")
                     avrcp_pause()
+                elif action is None:
+                    # 未対応キーはデバッグ用に出す(対応追加の判断材料)
+                    print(f"AVRCP: 未対応のキーコード {code}")
             dev.close()
         except Exception as error:
             print(f"AVRCP input error: {error}")
