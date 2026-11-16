@@ -20,6 +20,7 @@ import contextlib
 import ctypes
 import json
 import shutil
+import struct
 import tempfile
 import pygame
 from collections import deque
@@ -1615,6 +1616,74 @@ if HAS_DBUS_AGENT:
                         pass
 
     threading.Thread(target=media_player_thread, daemon=True).start()
+
+
+# --- BTイヤホンボタン(AVRCP uinput イベント) ---
+# BlueZはイヤホンからのAVRCPパススルーを uinput デバイス
+# ("<イヤホン名> (AVRCP)")として出力するため、そのキーイベントを
+# 読んで再生操作にマッピングする(ヘッドレス環境では誰も消費しない)。
+AVRCP_KEY_ACTIONS = {
+    163: "next",    # KEY_NEXTSONG
+    164: "toggle",  # KEY_PLAYPAUSE
+    165: "prev",    # KEY_PREVIOUSSONG
+    166: "pause",   # KEY_STOPCD
+}
+
+
+def find_avrcp_input():
+    """AVRCP用uinputデバイスのパスを探す(無ければNone)"""
+    import glob
+    for path in sorted(glob.glob("/sys/class/input/event*/device/name"), reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        if name.endswith("(AVRCP)"):
+            return "/dev/input/" + os.path.basename(os.path.dirname(path))
+    return None
+
+
+def avrcp_input_thread():
+    """AVRCP uinputデバイスを監視してイヤホンボタンを再生操作に反映する"""
+    # 32bitユーザーランドのstruct input_event: timeval(4+4)+type(2)+code(2)+value(4)
+    event_fmt = "=llHHi"
+    event_size = struct.calcsize(event_fmt)
+    while True:
+        try:
+            dev_path = find_avrcp_input()
+            if not dev_path:
+                time.sleep(5)
+                continue
+            dev = open(dev_path, "rb", buffering=0)
+            print(f"AVRCP input: {dev_path} を監視")
+            while True:
+                data = dev.read(event_size)
+                if data is None or len(data) < event_size:
+                    break   # デバイス切断 → 再検索へ
+                _, _, type_, code, value = struct.unpack(event_fmt, data)
+                if type_ != 1 or value != 1:    # EV_KEY 押下のみ(リピートは無視)
+                    continue
+                action = AVRCP_KEY_ACTIONS.get(code)
+                if action == "toggle":
+                    print("AVRCP: イヤホン再生/一時停止 受信")
+                    avrcp_toggle()
+                elif action == "next":
+                    print("AVRCP: イヤホン次の曲 受信")
+                    avrcp_next()
+                elif action == "prev":
+                    print("AVRCP: イヤホン前の曲 受信")
+                    avrcp_prev()
+                elif action == "pause":
+                    print("AVRCP: イヤホン停止 受信")
+                    avrcp_pause()
+            dev.close()
+        except Exception as error:
+            print(f"AVRCP input error: {error}")
+            time.sleep(5)
+
+
+threading.Thread(target=avrcp_input_thread, daemon=True).start()
 
 
 def format_bt_menu_name(name, mac, include_suffix=False):
