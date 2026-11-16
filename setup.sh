@@ -83,6 +83,12 @@ fi
 chmod 600 "$DAP_DIR/ap_config.json"
 echo "AP設定: $DAP_DIR/ap_config.json (初期パスワードは必ず変更してください)"
 
+echo "=== D-Bus ポリシー(AVRCP リモコン)をインストール ==="
+sudo install -o root -g root -m 0644 "$DAP_DIR/dbus/org.pizero.dap.conf" /etc/dbus-1/system.d/
+if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl reload dbus || sudo killall -HUP dbus-daemon || true
+fi
+
 echo "=== DAP サービス用 sudo 権限を設定 ==="
 sudo install -o root -g root -m 0755 "$DAP_DIR/tools/dap-web-wifi.py" /usr/local/sbin/dap-web-wifi
 sudo bash "$DAP_DIR/tools/configure_dap_sudoers.sh"
