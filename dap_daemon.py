@@ -1420,6 +1420,207 @@ def start_bt_confirmation_agent(mac):
         return None
 
 
+# --- BT リモコン(AVRCP: org.bluez.MediaPlayer1) ---
+# BTイヤホン側の再生/停止/曲送りボタン(AVRCPパススルー)をBlueZ経由で受け、
+# DAPの再生操作にマッピングする。BlueZは "/" 直下の ObjectManager で
+# MediaPlayer1 を自動検出する。イヤホン側のボタンは実機でのみテスト可能。
+
+MEDIA_PLAYER_PATH = "/org/pizero/dap/mediaplayer"
+MEDIA_PLAYER_NAME = "Pizero-DAP"
+
+def avrcp_play():
+    global is_playing, paused_duration, pause_start_time
+    with state_lock:
+        if is_playing:
+            return
+        if pause_start_time > 0 and pygame.mixer.get_init():
+            paused_duration += time.time() - pause_start_time
+            pause_start_time = 0.0
+            try:
+                pygame.mixer.music.unpause()
+                is_playing = True
+            except Exception:
+                is_playing = False
+        elif playlist:
+            play_current_track(full_refresh=False)
+
+def avrcp_pause():
+    global is_playing, track_paused_time, pause_start_time
+    with state_lock:
+        if not is_playing:
+            return
+        pause_start_time = time.time()
+        track_paused_time = get_current_sec()
+        try:
+            pygame.mixer.music.pause()
+        except Exception:
+            pass
+        is_playing = False
+
+def avrcp_next():
+    global current_track_idx
+    with state_lock:
+        if not playlist:
+            return
+        current_track_idx = (current_track_idx + 1) % len(playlist)
+        play_current_track(full_refresh=False)
+
+def avrcp_prev():
+    global current_track_idx
+    with state_lock:
+        if not playlist:
+            return
+        # 曲戻しボタンと同じスマート曲戻し(3秒超なら頭出し)
+        if is_playing and get_current_sec() > 3:
+            play_current_track(full_refresh=True)
+        else:
+            current_track_idx = (current_track_idx - 1) % len(playlist)
+            play_current_track(full_refresh=True)
+
+def avrcp_toggle():
+    if is_playing:
+        avrcp_pause()
+    else:
+        avrcp_play()
+
+def _media_player_state():
+    """AVRCP用の現在状態(ステータス/再生位置/曲名/長さ)"""
+    with state_lock:
+        if playlist and current_track_idx < len(playlist):
+            title = os.path.splitext(os.path.basename(playlist[current_track_idx]))[0]
+        else:
+            title = ""
+        status = "playing" if is_playing else ("paused" if pause_start_time > 0 else "stopped")
+        pos = max(0, int(get_current_sec()))
+        duration = max(0, int(total_duration_sec))
+    return status, pos, title, duration
+
+def media_player_track_dict(title, duration):
+    return dbus.Dictionary(
+        {"Title": dbus.String(title), "Duration": dbus.UInt32(duration),
+         "Item": dbus.ObjectPath(MEDIA_PLAYER_PATH + "/current")},
+        signature="sv")
+
+if HAS_DBUS_AGENT:
+    class MediaPlayer1(dbus.service.Object):
+        """BlueZ AVRCP TG 転送先の MediaPlayer1(読み取り専用プロパティ+操作)"""
+        def __init__(self, bus, path):
+            dbus.service.Object.__init__(self, bus, path)
+
+        def _props(self):
+            status, pos, title, duration = _media_player_state()
+            return {
+                "Name": dbus.String(MEDIA_PLAYER_NAME),
+                "Identity": dbus.String(MEDIA_PLAYER_NAME),
+                "Type": dbus.String("Audio"),
+                "Status": dbus.String(status),
+                "Position": dbus.UInt32(pos),
+                "Track": media_player_track_dict(title, duration),
+            }
+
+        @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="ss", out_signature="v")
+        def Get(self, interface, prop):
+            try:
+                return self._props()[prop]
+            except KeyError:
+                raise dbus.exceptions.DBusException(
+                    "org.bluez.Error.InvalidArguments", prop)
+
+        @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="s", out_signature="a{sv}")
+        def GetAll(self, interface):
+            return self._props()
+
+        @dbus.service.method(dbus.PROPERTIES_IFACE, in_signature="ssv", out_signature="")
+        def Set(self, interface, prop, value):
+            # プロパティは読み取り専用のため変更要求は握りつぶす
+            return
+
+        @dbus.service.signal(dbus.PROPERTIES_IFACE, signature="sa{sv}as")
+        def PropertiesChanged(self, interface, changed, invalidated):
+            pass
+
+        # --- AVRCP パススルー → DAP 操作 ---
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Play(self):
+            print("AVRCP: Play 受信")
+            avrcp_play()
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Pause(self):
+            print("AVRCP: Pause 受信")
+            avrcp_pause()
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Stop(self):
+            print("AVRCP: Stop 受信")
+            avrcp_pause()
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Next(self):
+            print("AVRCP: Next 受信")
+            avrcp_next()
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Previous(self):
+            print("AVRCP: Previous 受信")
+            avrcp_prev()
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def FastForward(self):
+            pass   # シークは未対応(無操作)
+
+        @dbus.service.method("org.bluez.MediaPlayer1")
+        def Rewind(self):
+            pass   # シークは未対応(無操作)
+
+    class MediaPlayerRoot(dbus.service.Object):
+        """/"直下の ObjectManager — BlueZ が MediaPlayer1 を自動検出するために必要"""
+        def __init__(self, bus, player):
+            self._player = player
+            dbus.service.Object.__init__(self, bus, "/")
+
+        @dbus.service.method("org.freedesktop.DBus.ObjectManager",
+                             out_signature="a{oa{sa{sv}}}")
+        def GetManagedObjects(self):
+            return {dbus.ObjectPath(MEDIA_PLAYER_PATH):
+                    {"org.bluez.MediaPlayer1": self._player._props()}}
+
+        @dbus.service.signal("org.freedesktop.DBus.ObjectManager",
+                             signature="oa{sa{sv}}")
+        def InterfacesAdded(self, path, interfaces):
+            pass
+
+    def media_player_thread():
+        """AVRCP用のD-Busオブジェクトを登録してGLibループを回す(専用スレッド)"""
+        poll = {"status": "", "title": ""}
+        while True:
+            try:
+                dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+                bus = dbus.SystemBus()
+                player = MediaPlayer1(bus, MEDIA_PLAYER_PATH)
+                root = MediaPlayerRoot(bus, player)
+                root.InterfacesAdded(MEDIA_PLAYER_PATH,
+                    {dbus.ObjectPath(MEDIA_PLAYER_PATH):
+                     {"org.bluez.MediaPlayer1": player._props()}})
+                print("AVRCP MediaPlayer1 登録完了")
+                def poll_props():
+                    status, pos, title, duration = _media_player_state()
+                    if (status, title) != (poll["status"], poll["title"]):
+                        changed = {"Status": dbus.String(status)}
+                        if title != poll["title"]:
+                            changed["Track"] = media_player_track_dict(title, duration)
+                        player.PropertiesChanged("org.bluez.MediaPlayer1", changed, [])
+                        poll["status"], poll["title"] = status, title
+                    return True   # GLibタイムアウト継続
+                GLib.timeout_add_seconds(1, poll_props)
+                GLib.MainLoop().run()
+            except Exception as error:
+                print(f"AVRCP media player error: {error}")
+                time.sleep(10)
+
+    threading.Thread(target=media_player_thread, daemon=True).start()
+
+
 def format_bt_menu_name(name, mac, include_suffix=False):
     base = normalize_bt_name(name) or mac
     if include_suffix and is_valid_bt_mac(mac):
