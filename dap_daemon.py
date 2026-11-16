@@ -1640,7 +1640,8 @@ def find_avrcp_input():
         except OSError:
             continue
         if name.endswith("(AVRCP)"):
-            return "/dev/input/" + os.path.basename(os.path.dirname(path))
+            # /sys/class/input/eventN/device/name → eventN
+            return "/dev/input/" + os.path.basename(os.path.dirname(os.path.dirname(path)))
     return None
 
 
