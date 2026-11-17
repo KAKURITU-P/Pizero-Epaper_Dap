@@ -42,6 +42,16 @@ def cpu_usage_percent(previous: Optional[CpuTimes], current: Optional[CpuTimes])
     return max(0.0, min(100.0, busy * 100.0 / total))
 
 
+def per_core_load(load1: Optional[float], core_count: Optional[int]) -> Optional[float]:
+    """ロードアベレージをコア数で割って正規化する(1コア機と同じ物差しに揃える)。
+
+    生のload averageはコア数で意味が変わるため、表示用にコア単位へ換算する。
+    """
+    if load1 is None or not core_count or core_count < 1:
+        return None
+    return load1 / core_count
+
+
 def parse_temperature_celsius(text: str) -> Optional[float]:
     """``thermal_zone0/temp``(ミリ度)を摂氏にする。範囲外・不正値はNone。"""
     try:

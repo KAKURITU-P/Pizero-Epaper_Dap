@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from system_stats_utils import (  # noqa: E402
     cpu_usage_percent,
+    per_core_load,
     graph_points,
     parse_cpu_times,
     parse_temperature_celsius,
@@ -85,6 +86,20 @@ class GraphTests(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(graph_points([], self.BOX), [])
+
+
+class PerCoreLoadTests(unittest.TestCase):
+    def test_divides_by_core_count(self):
+        self.assertEqual(per_core_load(4.0, 4), 1.0)
+        self.assertAlmostEqual(per_core_load(1.51, 4), 0.3775)
+
+    def test_single_core_unchanged(self):
+        self.assertEqual(per_core_load(1.51, 1), 1.51)
+
+    def test_invalid_inputs_return_none(self):
+        self.assertIsNone(per_core_load(None, 4))
+        self.assertIsNone(per_core_load(1.0, 0))
+        self.assertIsNone(per_core_load(1.0, None))
 
 
 if __name__ == "__main__":

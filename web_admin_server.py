@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from system_stats_utils import per_core_load
+
 BASE_DIR = Path(__file__).resolve().parent
 AP_CONFIG = BASE_DIR / "ap_config.json"
 PAGE_FILE = BASE_DIR / "web_admin" / "index.html"
@@ -614,10 +616,13 @@ def read_memory_text():
 
 
 def read_load1():
+    """1分平均のロードアベレージをコア数で正規化して返す(コア単位の値)。"""
     try:
-        return round(float(Path("/proc/loadavg").read_text().split()[0]), 2)
+        load1 = float(Path("/proc/loadavg").read_text().split()[0])
     except (OSError, ValueError, IndexError):
         return None
+    normalized = per_core_load(load1, os.cpu_count())
+    return round(normalized, 2) if normalized is not None else None
 
 
 def read_uptime_text():
