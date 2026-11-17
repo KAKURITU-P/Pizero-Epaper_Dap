@@ -16,6 +16,7 @@ HISTORY_FILE = Path("/tmp/battery_history.json")
 HISTORY_INTERVAL_SEC = 120
 HISTORY_MAX = 150
 stopping = False
+last_history_ts = 0   # 履歴へ最後に追記した時刻(2分間隔の制御用)
 
 def stop_handler(signum, frame):
     global stopping
@@ -68,7 +69,6 @@ def main():
     zero_percent_count = 0   # 0%を連続で検知した回数
     REQUIRED_COUNT = 3       # 何回連続で0%になったらシャットダウンするか
     startup_grace_count = 5  # 起動直後の数回（約12秒間）はシャットダウン判定を免除
-    last_history_ts = 0      # 履歴へ最後に追記した時刻(1分間隔の制御用)
 
     while not stopping:
         try:
