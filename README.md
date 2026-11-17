@@ -124,7 +124,7 @@ dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4
 
 ## セットアップ手順
 
-対応環境は Raspberry Pi Zero W / 2 W + Raspberry Pi OS (Trixie) です。アプリは `/home/pi/dap`、音楽は `/home/pi/music`、実行ユーザーは `pi` を前提とします。
+対応環境は Raspberry Pi Zero W / 2 W + Raspberry Pi OS (Trixie-32bit) です。アプリは `/home/pi/dap`、音楽は `/home/pi/music`、実行ユーザーは `pi` を前提とします。
 
 ```bash
 sudo apt update
