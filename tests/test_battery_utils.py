@@ -5,7 +5,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from battery_utils import get_battery_info, get_battery_percent  # noqa: E402
+from battery_utils import (  # noqa: E402
+    get_battery_history,
+    get_battery_info,
+    get_battery_percent,
+)
 
 
 class BatteryInfoTests(unittest.TestCase):
@@ -54,6 +58,36 @@ class BatteryInfoTests(unittest.TestCase):
     def test_percent_parsing_error_marker(self):
         self.write("-/--%")
         self.assertIsNone(get_battery_percent(self.path))
+
+
+class BatteryHistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "battery_history.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, data):
+        import json
+        with open(self.path, "w", encoding="ascii") as f:
+            json.dump(data, f)
+
+    def test_reads_percents_in_order(self):
+        self.write([[1000, 95], [1120, 94], [1240, 93]])
+        self.assertEqual(get_battery_history(self.path), [95, 94, 93])
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(get_battery_history(self.path), [])
+
+    def test_corrupt_json_returns_empty(self):
+        with open(self.path, "w", encoding="ascii") as f:
+            f.write("{not json")
+        self.assertEqual(get_battery_history(self.path), [])
+
+    def test_skips_malformed_entries(self):
+        self.write([[1000, 90], ["bad"], [1001], [1002, "x"], [1003, 88]])
+        self.assertEqual(get_battery_history(self.path), [90, 88])
 
 
 if __name__ == "__main__":

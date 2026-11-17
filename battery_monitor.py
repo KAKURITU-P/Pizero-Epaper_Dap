@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 import signal
@@ -9,6 +10,11 @@ from smbus2 import SMBus, i2c_msg
 ADDR = 0x68
 DIVIDER_RATIO = 4.11 / 1.45
 STATUS_FILE = Path("/tmp/battery_status")
+# 残量の履歴([[unix時刻, %], ...])。2分ごとに追記し、直近5時間分を保持する。
+# /tmp は tmpfs なので再起動で消え、SDカードには書き込まない。
+HISTORY_FILE = Path("/tmp/battery_history.json")
+HISTORY_INTERVAL_SEC = 120
+HISTORY_MAX = 150
 stopping = False
 
 def stop_handler(signum, frame):
@@ -35,6 +41,24 @@ def publish(text):
     tmp.write_text(text + "\n", encoding="ascii")
     os.replace(tmp, STATUS_FILE)
 
+def append_history(percent, now=None):
+    """残量%を履歴JSONに2分ごとに追記する(アトミック書き込み)。"""
+    global last_history_ts
+    now = time.time() if now is None else now
+    if now - last_history_ts < HISTORY_INTERVAL_SEC:
+        return
+    last_history_ts = now
+    try:
+        entries = json.loads(HISTORY_FILE.read_text(encoding="ascii"))
+        if not isinstance(entries, list):
+            entries = []
+    except (OSError, ValueError):
+        entries = []
+    entries.append([int(now), int(percent)])
+    tmp = HISTORY_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(entries[-HISTORY_MAX:]), encoding="ascii")
+    os.replace(tmp, HISTORY_FILE)
+
 def main():
     global stopping
     signal.signal(signal.SIGTERM, stop_handler)
@@ -44,6 +68,7 @@ def main():
     zero_percent_count = 0   # 0%を連続で検知した回数
     REQUIRED_COUNT = 3       # 何回連続で0%になったらシャットダウンするか
     startup_grace_count = 5  # 起動直後の数回（約12秒間）はシャットダウン判定を免除
+    last_history_ts = 0      # 履歴へ最後に追記した時刻(1分間隔の制御用)
 
     while not stopping:
         try:
@@ -56,6 +81,7 @@ def main():
             # 概算表示。1セルLi-ion/LiPoを想定
             percent = max(0, min(100, round((battery_v - 3.3) / (4.1 - 3.3) * 100)))
             publish(f"{battery_v:.2f}V/{percent}%")
+            append_history(percent)
             logging.info("ADC %.4f V, battery %.2f V, %d%%",
                          adc_v, battery_v, percent)
 

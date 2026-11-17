@@ -85,7 +85,11 @@ def ensure_ap_config():
 
 ensure_ap_config()
 
-from battery_utils import get_battery_info, get_battery_percent  # noqa: E402
+from battery_utils import (  # noqa: E402
+    get_battery_history,
+    get_battery_info,
+    get_battery_percent,
+)
 from audio_device_utils import (  # noqa: E402
     asoundrc_uses_usb_otg,
     get_audio_buffer_size,
@@ -1116,7 +1120,9 @@ def commit_cpu_temp_sample():
             "sample_count": len(history),
         }
 
-RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP")
+RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY")
+# バッテリー履歴グラフの保持サンプル数(battery_monitor.py の 2分刻み×150 = 5時間)
+HISTORY_GRAPH_SLOTS = 150
 
 # メニュー表示用のIP/コーデックはバックグラウンドで取得してキャッシュする。
 # state_lock保持中にbusctlやIP確認を実行すると全スレッドが止まるため。
@@ -1235,6 +1241,43 @@ def render_system_cpu_temp_screen(image, draw, stats):
     count = stats["sample_count"]
     caption = "直近5分のCPU使用率 (5秒平均)" if count >= 60 else f"CPU使用率 (測定中 {count}/60)"
     draw.text((8, 107), truncate_by_width(caption, font_small, width - 16), font=font_small, fill=0)
+
+def render_system_battery_screen(image, draw):
+    """システム設定 > バッテリー残量: 直近5時間の残量グラフを描く。"""
+    width = image.width
+    header = "システム設定 > バッテリー残量"
+    draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
+    draw.line([(0, 18), (width - 1, 18)], fill=0)
+
+    pct_str, volt_str = get_battery_info()
+    current_line = f"現在 {pct_str}" + (f" ({volt_str})" if volt_str else "")
+    draw.text((8, 21), truncate_by_width(current_line, font_small, width - 16), font=font_small, fill=0)
+
+    history = get_battery_history()
+    if not history:
+        draw.text((8, 45), "履歴を記録中...", font=font_main, fill=0)
+        draw.text((8, 65), "(battery-monitorの起動2分後から記録)", font=font_small, fill=0)
+        return
+
+    # グラフ: 縦0〜100%固定、新しい値が右端。中央の点線が50%。
+    box = (8, 42, width - 9, 97)
+    draw.rectangle(list(box), outline=0, fill=255, width=1)
+    inner = (box[0] + 2, box[1] + 2, box[2] - 2, box[3] - 2)
+    middle = (inner[1] + inner[3]) // 2
+    for x in range(inner[0], inner[2], 6):
+        draw.point((x, middle), fill=0)
+    points = graph_points(history, inner, slots=HISTORY_GRAPH_SLOTS)
+    if len(points) >= 2:
+        draw.line(points, fill=0, width=1)
+    elif points:
+        x, y = points[0]
+        draw.rectangle([x - 1, y - 1, x + 1, y + 1], fill=0)
+
+    caption = (
+        "直近5時間の残量 (2分ごと)" if len(history) >= HISTORY_GRAPH_SLOTS
+        else f"残量の記録 ({len(history)}/{HISTORY_GRAPH_SLOTS})"
+    )
+    draw.text((8, 99), truncate_by_width(caption, font_small, width - 16), font=font_small, fill=0)
 
 def get_current_wifi_ssid():
     try:
@@ -1982,6 +2025,9 @@ def display_worker():
 
             elif scr == "MENU_SYS_CPU_TEMP":
                 render_system_cpu_temp_screen(image, draw, cpu_temp_stats)
+
+            elif scr == "MENU_SYS_BATTERY":
+                render_system_battery_screen(image, draw)
 
             elif scr == "PLAY":
                 # スリープタイマー表示生成(60分超は時間形式)
@@ -3376,6 +3422,7 @@ def update_menu_items(reset_cursor=True):
             add("隠し機能を削除", "remove_hidden")
         add("RAM/ROM使用量", "open_resource_ram")
         add("CPU使用率/温度", "open_resource_cpu")
+        add("バッテリー残量", "open_resource_batt")
 
     elif current_screen == "MENU_POWER":
         add("../ (戻る)", "back", ("MENU_SYS", None))
@@ -3921,6 +3968,10 @@ def on_btn_menu_or_select():
             request_display_update(is_full_refresh=True)
         elif entry_id == "open_resource_cpu":
             current_screen = "MENU_SYS_CPU_TEMP"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_resource_batt":
+            current_screen = "MENU_SYS_BATTERY"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
         elif entry_id == "open_power":
