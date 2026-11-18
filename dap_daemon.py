@@ -1148,7 +1148,7 @@ def commit_cpu_temp_sample():
             "sample_count": len(history),
         }
 
-RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY", "MENU_STATS")
+RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY", "MENU_STATS", "MENU_GUIDE")
 # バッテリー履歴グラフの保持サンプル数(battery_monitor.py の 2分刻み×150 = 5時間)
 HISTORY_GRAPH_SLOTS = 150
 
@@ -1342,6 +1342,36 @@ def render_play_stats_screen(image, draw):
         name = os.path.splitext(os.path.basename(path))[0]
         draw.text((8, y), truncate_by_width(f"{count}回 {name}", font_small, width - 16), font=font_small, fill=0)
         y += 12
+
+def render_operation_guide_screen(image, draw):
+    """システム設定 > 操作ガイド: 2個のTMHU28レバーの配置図と役割を描く。"""
+    width = image.width
+    header = "システム設定 > 操作ガイド"
+    draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
+    draw.line([(0, 18), (width - 1, 18)], fill=0)
+
+    # 2列レイアウト: 左=左側面レバー、右=底面レバー
+    col_x = (8, 128)
+    for x, title in zip(col_x, ("左側面レバー", "底面レバー")):
+        draw.text((x, 22), title, font=font_main, fill=0)
+    rows = (
+        ("上: 音量上げ", "左: 前曲/階層戻り"),
+        ("下: 音量下げ", "右: 次曲/★トグル"),
+        ("押: メニュー/決定", "押: 再生/停止"),
+    )
+    y = 46
+    for left_text, right_text in rows:
+        draw.text((col_x[0], y), truncate_by_width(left_text, font_small, 118), font=font_small, fill=0)
+        draw.text((col_x[1], y), truncate_by_width(right_text, font_small, width - col_x[1] - 8), font=font_small, fill=0)
+        y += 14
+
+    notes = (
+        "※メニュー中は押し込みでPLAYへ戻る",
+        "※★トグルはアルバム階層のみ",
+    )
+    for note in notes:
+        draw.text((8, y + 2), truncate_by_width(note, font_small, width - 16), font=font_small, fill=0)
+        y += 13
 
 def get_current_wifi_ssid():
     try:
@@ -2095,6 +2125,9 @@ def display_worker():
 
             elif scr == "MENU_STATS":
                 render_play_stats_screen(image, draw)
+
+            elif scr == "MENU_GUIDE":
+                render_operation_guide_screen(image, draw)
 
             elif scr == "PLAY":
                 # スリープタイマー表示生成(60分超は時間形式)
@@ -3494,6 +3527,7 @@ def update_menu_items(reset_cursor=True):
         add("RAM/ROM使用量", "open_resource_ram")
         add("CPU使用率/温度", "open_resource_cpu")
         add("バッテリー残量", "open_resource_batt")
+        add("操作ガイド", "open_guide")
 
     elif current_screen == "MENU_POWER":
         add("../ (戻る)", "back", ("MENU_SYS", None))
@@ -4048,6 +4082,10 @@ def on_btn_menu_or_select():
             request_display_update(is_full_refresh=True)
         elif entry_id == "open_resource_batt":
             current_screen = "MENU_SYS_BATTERY"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
+        elif entry_id == "open_guide":
+            current_screen = "MENU_GUIDE"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
         elif entry_id == "open_power":
