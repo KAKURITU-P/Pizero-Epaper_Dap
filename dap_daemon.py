@@ -1148,7 +1148,7 @@ def commit_cpu_temp_sample():
             "sample_count": len(history),
         }
 
-RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY", "MENU_STATS", "MENU_GUIDE")
+RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY", "MENU_STATS")
 # バッテリー履歴グラフの保持サンプル数(battery_monitor.py の 2分刻み×150 = 5時間)
 HISTORY_GRAPH_SLOTS = 150
 
@@ -1343,35 +1343,118 @@ def render_play_stats_screen(image, draw):
         draw.text((8, y), truncate_by_width(f"{count}回 {name}", font_small, width - 16), font=font_small, fill=0)
         y += 12
 
+# --- 操作ガイド(4ページ構成) ---
+GUIDE_PAGE_COUNT = 4
+guide_page = 0   # 0: レバー操作 / 1: 階層概形 / 2: 仕様一覧 / 3: QR
+
+def load_guide_qr(name, size=84):
+    """ガイド4ページ目用のQR画像を読み込んで縮小する(無ければNone)"""
+    try:
+        qr = Image.open(os.path.join(BASE_DIR, "assets", name)).convert("1")
+        return qr.resize((size, size), Image.NEAREST)
+    except Exception as error:
+        print(f"Guide QR load error ({name}): {error}")
+        return None
+
+def advance_guide_page():
+    """ガイドを次ページへ。最終ページの次はシステム設定に戻る。"""
+    global guide_page, current_screen
+    if guide_page >= GUIDE_PAGE_COUNT - 1:
+        guide_page = 0
+        current_screen = "MENU_SYS"
+        update_menu_items(reset_cursor=True)
+    else:
+        guide_page += 1
+    request_display_update(is_full_refresh=True)
+
+def guide_back_page():
+    """ガイドを前ページへ。1ページ目ではシステム設定に戻る。"""
+    global guide_page, current_screen
+    if guide_page > 0:
+        guide_page -= 1
+    else:
+        guide_page = 0
+        current_screen = "MENU_SYS"
+        update_menu_items(reset_cursor=True)
+    request_display_update(is_full_refresh=True)
+
 def render_operation_guide_screen(image, draw):
-    """システム設定 > 操作ガイド: 2個のTMHU28レバーの配置図と役割を描く。"""
+    """システム設定 > 操作ガイド: 4ページ構成の説明を描く。
+
+    1: レバー操作 / 2: 階層の概形 / 3: バグじゃない仕様 / 4: QR。
+    ページ送りはボタンで直接行い、最終ページの次でシステム設定に戻る。
+    """
     width = image.width
-    header = "システム設定 > 操作ガイド"
+    header = f"システム設定 > 操作ガイド {guide_page + 1}/{GUIDE_PAGE_COUNT}"
     draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
     draw.line([(0, 18), (width - 1, 18)], fill=0)
 
-    # 2列レイアウト: 左=左側面レバー、右=底面レバー
-    col_x = (8, 128)
-    for x, title in zip(col_x, ("左側面レバー", "底面レバー")):
-        draw.text((x, 22), title, font=font_main, fill=0)
-    rows = (
-        ("上: 音量上げ", "左: 前曲/階層戻り"),
-        ("下: 音量下げ", "右: 次曲/★トグル"),
-        ("押: メニュー/決定", "押: 再生/停止"),
-    )
-    y = 46
-    for left_text, right_text in rows:
-        draw.text((col_x[0], y), truncate_by_width(left_text, font_small, 118), font=font_small, fill=0)
-        draw.text((col_x[1], y), truncate_by_width(right_text, font_small, width - col_x[1] - 8), font=font_small, fill=0)
-        y += 14
+    if guide_page == 0:
+        # 1ページ目: レバーの配置と役割。左列=左側面、右列=底面(物理配置どおり)。
+        col_x = (8, 128)
+        for x, title in zip(col_x, ("左側面レバー", "底面レバー")):
+            draw.text((x, 22), title, font=font_main, fill=0)
+        rows = (
+            ("上: 音量上げ", "左: 前曲/階層戻り"),
+            ("下: 音量下げ", "右: 次曲/★トグル"),
+            ("押: メニュー/決定", "押: 再生/停止"),
+        )
+        y = 46
+        for left_text, right_text in rows:
+            draw.text((col_x[0], y), truncate_by_width(left_text, font_small, 118), font=font_small, fill=0)
+            draw.text((col_x[1], y), truncate_by_width(right_text, font_small, width - col_x[1] - 8), font=font_small, fill=0)
+            y += 14
+        # ★トグルがアルバム階層限定なのは3ページ目の仕様一覧に譲る
+        note = "※メニュー中は押し込みでPLAYへ戻る"
+        draw.text((8, y + 3), truncate_by_width(note, font_small, width - 16), font=font_small, fill=0)
 
-    notes = (
-        "※メニュー中は押し込みでPLAYへ戻る",
-        "※★トグルはアルバム階層のみ",
-    )
-    for note in notes:
-        draw.text((8, y + 2), truncate_by_width(note, font_small, width - 16), font=font_small, fill=0)
-        y += 13
+    elif guide_page == 1:
+        # 2ページ目: メニュー階層の概形
+        lines = (
+            "TOP: ★お気に入り/アルバム",
+            "再生設定: シャッフル/リピート/出力先",
+            "システム: 接続設定/電源/更新/リソース",
+            "接続設定: Wi-Fi/BT/APモード",
+            "アルバム: 履歴/統計/再読み込み",
+        )
+        y = 24
+        for line in lines:
+            draw.text((8, y), truncate_by_width(line, font_small, width - 16), font=font_small, fill=0)
+            y += 14
+
+    elif guide_page == 2:
+        # 3ページ目: 「バグじゃない仕様」の説明
+        lines = (
+            "切替時の白黒反転は残像対策です",
+            "プログレスバーは8段階表示です",
+            "前曲: 3秒超の再生中は頭出し",
+            "音量変更後5秒はVOL表示になります",
+            "無操作10秒でPLAY画面へ戻ります",
+        )
+        y = 24
+        for line in lines:
+            draw.text((8, y), truncate_by_width(line, font_small, width - 16), font=font_small, fill=0)
+            y += 14
+
+    else:
+        # 4ページ目: GitHubリポジトリと作者プロフィールのQR
+        draw.text((28, 22), "GitHub", font=font_small, fill=0)
+        draw.text((137, 22), "作者プロフィール", font=font_small, fill=0)
+        github_qr = load_guide_qr("qr_github.png")
+        profile_qr = load_guide_qr("qr_profile.png")
+        if github_qr:
+            image.paste(github_qr, (23, 36))
+        else:
+            draw.text((23, 60), "QR未生成", font=font_small, fill=0)
+        if profile_qr:
+            image.paste(profile_qr, (143, 36))
+        else:
+            draw.text((143, 60), "QR未生成", font=font_small, fill=0)
+
+    # フッターの操作ヒント(最終ページはQRで埋まっているので省略)
+    if guide_page < GUIDE_PAGE_COUNT - 1:
+        hint = "左倒し: 戻る / 何か押すと次へ"
+        draw.text((8, 108), truncate_by_width(hint, font_small, width - 16), font=font_small, fill=0)
 
 def get_current_wifi_ssid():
     try:
@@ -3538,6 +3621,10 @@ def update_menu_items(reset_cursor=True):
     elif current_screen in RESOURCE_SCREENS:
         add("../ (戻る)", "back", ("MENU_SYS", None))
 
+    elif current_screen == "MENU_GUIDE":
+        # 専用レンダラーで描く4ページ構成。ページ送りはボタン処理で直接行う。
+        pass
+
     elif current_screen == "MENU_ALBUMS":
         library_menu_entries = get_library_entries(ROOT_REL_DIR, include_folder_play=False)
         fav_set = set(favorites_list)
@@ -3970,7 +4057,7 @@ def check_easter_egg_trigger():
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, status_message, eq_cursor
-    global is_clock_unlocked, is_eq_unlocked
+    global is_clock_unlocked, is_eq_unlocked, guide_page
     global bt_paired_devices, bt_paired_devices_loading
     with state_lock:
         reset_inactivity_timer()
@@ -3992,6 +4079,10 @@ def on_btn_menu_or_select():
             current_screen = "MENU_TOP"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
+            return
+
+        if current_screen == "MENU_GUIDE":
+            advance_guide_page()
             return
 
         if cursor_idx >= len(menu_entries):
@@ -4085,6 +4176,7 @@ def on_btn_menu_or_select():
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
         elif entry_id == "open_guide":
+            guide_page = 0
             current_screen = "MENU_GUIDE"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
@@ -4216,7 +4308,9 @@ def on_btn_play_or_back():
 
         if exit_cat_clock_if_needed(): return
 
-        if current_screen in RESOURCE_SCREENS:
+        if current_screen == "MENU_GUIDE":
+            advance_guide_page()
+        elif current_screen in RESOURCE_SCREENS:
             current_screen = "MENU_SYS"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
@@ -4258,6 +4352,8 @@ def on_btn_up_action():
                 eq_values[band] = min(6, eq_values[band] + 1)
                 schedule_settings_save()
                 request_display_update(is_full_refresh=False)
+        elif current_screen == "MENU_GUIDE":
+            advance_guide_page()
         elif current_screen == "PLAY":
             volume = min(volume + 0.05, 1.0)
             volume_changed_at = time.time()
@@ -4281,6 +4377,8 @@ def on_btn_down_action():
                 eq_values[band] = max(-6, eq_values[band] - 1)
                 schedule_settings_save()
                 request_display_update(is_full_refresh=False)
+        elif current_screen == "MENU_GUIDE":
+            advance_guide_page()
         elif current_screen == "PLAY":
             volume = max(volume - 0.05, 0.0)
             volume_changed_at = time.time()
@@ -4304,7 +4402,11 @@ def on_btn_prev():
             eq_cursor = (eq_cursor - 1) % 4
             request_display_update(is_full_refresh=False)
 
-        # 2. PLAY画面の場合: 曲戻し(3秒超なら頭出し)
+        # 2. 操作ガイドの場合: 前のページへ(1ページ目ではガイドを閉じる)
+        elif current_screen == "MENU_GUIDE":
+            guide_back_page()
+
+        # 3. PLAY画面の場合: 曲戻し(3秒超なら頭出し)
         elif current_screen == "PLAY" and playlist:
             if is_playing and get_current_sec() > 3:
                 play_current_track(full_refresh=True)
@@ -4330,6 +4432,8 @@ def handle_next_btn_press():
         if current_screen == "CAT_EQ":
             eq_cursor = (eq_cursor + 1) % 4
             request_display_update(is_full_refresh=False)
+        elif current_screen == "MENU_GUIDE":
+            advance_guide_page()
         elif current_screen in ("MENU_ALBUMS", "MENU_TRACKS", "MENU_FAVS", "MENU_HISTORY") and cursor_idx < len(menu_entries):
             # アルバム階層では曲送りを「カーソル曲のお気に入りトグル」に使う。
             entry = menu_entries[cursor_idx]
