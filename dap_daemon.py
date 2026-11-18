@@ -344,6 +344,11 @@ def clean_shutdown_display(message="Power Off..."):
 def handle_signal(sig, frame):
     global shutdown_exit_requested
     shutdown_exit_requested = True
+    # 累計再生統計を確定させる(失敗しても終了処理は続ける)
+    try:
+        save_playback_history()
+    except Exception:
+        pass
     clean_shutdown_display("Shutting down...")
     if shutdown_display_owner == threading.get_ident():
         # 描画を自分で実行中の場合はSystemExitで中断しない。メインループ側で終了する。
@@ -396,6 +401,9 @@ current_track_idx = 0
 favorites_list = []
 favorites_file_mtime = None
 playback_history = []
+# 累計再生統計: total_sec=聴取秒数(1秒ごとに加算) / track_count=再生曲数の総計 /
+# counts=曲ごとの再生回数。play_data.jsonの"stats"として、曲切り替え時と終了時に書き出す。
+play_stats = {"total_sec": 0, "track_count": 0, "counts": {}}
 is_shuffle = False
 
 # リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
@@ -538,6 +546,22 @@ def load_playback_history():
             if isinstance(last_played, str) and last_played not in playback_history:
                 playback_history.insert(0, last_played)
             playback_history = playback_history[:PLAYBACK_HISTORY_LIMIT]
+            stats = data.get("stats")
+            if isinstance(stats, dict):
+                try:
+                    play_stats["total_sec"] = int(stats.get("total_sec") or 0)
+                except (TypeError, ValueError):
+                    play_stats["total_sec"] = 0
+                try:
+                    play_stats["track_count"] = int(stats.get("track_count") or 0)
+                except (TypeError, ValueError):
+                    play_stats["track_count"] = 0
+                counts = stats.get("counts")
+                if isinstance(counts, dict):
+                    play_stats["counts"] = {
+                        path: count for path, count in counts.items()
+                        if isinstance(path, str) and isinstance(count, int) and count > 0
+                    }
     except FileNotFoundError:
         playback_history = []
     except Exception as e:
@@ -557,6 +581,7 @@ def save_playback_history():
         data["history"] = playback_history
         if playback_history:
             data["last_played"] = playback_history[0]
+        data["stats"] = play_stats
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
@@ -573,13 +598,16 @@ def get_available_playback_history():
     return [path for path in playback_history if os.path.isfile(path)]
 
 def record_playback_history(filepath):
-    """再生した曲を新しい順で保存し、同じ曲の重複を避ける"""
+    """再生した曲を新しい順で保存し、同じ曲の重複を避ける。累計統計も更新する。"""
     global playback_history
+    play_stats["track_count"] += 1
+    play_stats["counts"][filepath] = play_stats["counts"].get(filepath, 0) + 1
     updated = [filepath] + [path for path in playback_history if path != filepath]
     updated = updated[:PLAYBACK_HISTORY_LIMIT]
     if updated != playback_history:
         playback_history = updated
-        save_playback_history()
+    # 同じ曲の連続再生でも統計は変わるので、履歴の有無に関係なく保存する
+    save_playback_history()
 
 # お気に入りの追加・解除はWeb管理画面のみで行う(本体ボタンには割り当てなし)。
 # favorites_listはsync_favorites()がWeb側のfavorites.json変更を取り込む。
@@ -1120,7 +1148,7 @@ def commit_cpu_temp_sample():
             "sample_count": len(history),
         }
 
-RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY")
+RESOURCE_SCREENS = ("MENU_SYS_RAM_ROM", "MENU_SYS_CPU_TEMP", "MENU_SYS_BATTERY", "MENU_STATS")
 # バッテリー履歴グラフの保持サンプル数(battery_monitor.py の 2分刻み×150 = 5時間)
 HISTORY_GRAPH_SLOTS = 150
 
@@ -1146,6 +1174,9 @@ def system_resource_monitor_thread():
     while True:
         try:
             sample_cpu_tick()
+            # 聴取時間の累計(1秒ごと)。一時停止中(pause_start_time>0)はカウントしない。
+            if is_playing and pause_start_time == 0:
+                play_stats["total_sec"] += 1
             if tick % 5 == 0:
                 sample_menu_info_values()
                 sample_system_resource_usage()
@@ -1278,6 +1309,39 @@ def render_system_battery_screen(image, draw):
         else f"残量の記録 ({len(history)}/{HISTORY_GRAPH_SLOTS})"
     )
     draw.text((8, 99), truncate_by_width(caption, font_small, width - 16), font=font_small, fill=0)
+
+def format_listening_time(total_sec):
+    """聴取秒数を「X時間Y分 / Y分 / X秒」形式に整える(表示用)"""
+    total_sec = max(0, int(total_sec))
+    if total_sec >= 3600:
+        return f"{total_sec // 3600}時間{(total_sec % 3600) // 60}分"
+    if total_sec >= 60:
+        return f"{total_sec // 60}分"
+    return f"{total_sec}秒"
+
+def render_play_stats_screen(image, draw):
+    """アルバム > 再生統計: 累計再生時間・回数と再生回数TOP3を描く。"""
+    width = image.width
+    header = "アルバム > 再生統計"
+    draw.text((8, 2), truncate_by_width(header, font_main, width - 16), font=font_main, fill=0)
+    draw.line([(0, 18), (width - 1, 18)], fill=0)
+
+    counts = play_stats.get("counts", {})
+    if play_stats["track_count"] == 0:
+        draw.text((8, 40), "まだ記録がありません", font=font_main, fill=0)
+        draw.text((8, 60), "(再生すると累計されます)", font=font_small, fill=0)
+        return
+
+    draw.text((8, 22), f"総再生時間: {format_listening_time(play_stats['total_sec'])}", font=font_main, fill=0)
+    draw.text((8, 42), f"累計再生曲数: {play_stats['track_count']}回", font=font_main, fill=0)
+
+    top_tracks = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:3]
+    draw.text((8, 64), "再生回数 TOP3", font=font_main, fill=0)
+    y = 84
+    for path, count in top_tracks:
+        name = os.path.splitext(os.path.basename(path))[0]
+        draw.text((8, y), truncate_by_width(f"{count}回 {name}", font_small, width - 16), font=font_small, fill=0)
+        y += 12
 
 def get_current_wifi_ssid():
     try:
@@ -2028,6 +2092,9 @@ def display_worker():
 
             elif scr == "MENU_SYS_BATTERY":
                 render_system_battery_screen(image, draw)
+
+            elif scr == "MENU_STATS":
+                render_play_stats_screen(image, draw)
 
             elif scr == "PLAY":
                 # スリープタイマー表示生成(60分超は時間形式)
@@ -3344,6 +3411,10 @@ def update_menu_items(reset_cursor=True):
             add(os.path.splitext(os.path.basename(path))[0], "play_history",
                 (list(history_paths), path), bold=path in fav_set)
 
+    elif current_screen == "MENU_STATS":
+        # 戻り先はアルバム。本体は RESOURCE_SCREENS として専用描画される。
+        add("../ (戻る)", "back", ("MENU_ALBUMS", None))
+
     elif current_screen == "MENU_CONN":
         add("../ (戻る)", "back", ("MENU_SYS", None))
         add("Wi-Fi設定", "open_wifi")
@@ -3439,6 +3510,7 @@ def update_menu_items(reset_cursor=True):
         add("../ (戻る)", "back", ("MENU_TOP", None))
         add("曲ライブラリ再読み込み", "lib_reload")
         add("[再生履歴]", "open_history")
+        add("[再生統計]", "open_stats")
         for lib_entry in library_menu_entries:
             if lib_entry["type"] == "dir":
                 add(lib_entry["display"], "album_dir", lib_entry["rel_dir"])
@@ -3954,6 +4026,10 @@ def on_btn_menu_or_select():
             current_screen = "MENU_HISTORY"
             update_menu_items(reset_cursor=True)
             request_display_update(is_full_refresh=True)
+        elif entry_id == "open_stats":
+            current_screen = "MENU_STATS"
+            update_menu_items(reset_cursor=True)
+            request_display_update(is_full_refresh=True)
         elif entry_id == "open_sleep":
             current_screen = "MENU_SLEEP"
             update_menu_items(reset_cursor=True)
@@ -4315,6 +4391,7 @@ try:
         if shutdown_exit_requested:
             # SIGTERM時に描画中だった場合は描画完了後にここで終了する
             flush_pending_settings_save()
+            save_playback_history()
             sys.exit(0)
         now = time.time()
         sync_favorites()

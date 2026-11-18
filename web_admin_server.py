@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from system_stats_utils import per_core_load
+from system_stats_utils import cpu_usage_percent, parse_cpu_times, per_core_load
 
 BASE_DIR = Path(__file__).resolve().parent
 AP_CONFIG = BASE_DIR / "ap_config.json"
@@ -625,6 +625,39 @@ def read_load1():
     return round(normalized, 2) if normalized is not None else None
 
 
+# グラフ表示用の履歴。CPUはサーバー自身が5秒ごとに計測し、バッテリーは
+# battery-monitorが2分ごとに書く /tmp/battery_history.json をそのまま配信する。
+CPU_HISTORY_LIMIT = 60   # 5秒 × 60 = 直近5分
+_cpu_history = []
+_cpu_last_times = None
+
+def cpu_history_sampler():
+    """/proc/statを5秒ごとに読んでCPU使用率(%)の履歴を貯める。"""
+    global _cpu_last_times
+    while True:
+        try:
+            times = parse_cpu_times(Path("/proc/stat").read_text())
+            usage = cpu_usage_percent(_cpu_last_times, times)
+            if usage is not None:
+                _cpu_history.append(round(usage))
+                del _cpu_history[:-CPU_HISTORY_LIMIT]
+            _cpu_last_times = times
+        except OSError:
+            pass
+        time.sleep(5)
+
+def read_battery_history_points():
+    """battery-monitorの履歴([[unix時刻, %], ...])をそのまま返す(無ければ空)。"""
+    try:
+        with open("/tmp/battery_history.json", "r") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, list) and len(entry) == 2]
+
+
 def read_uptime_text():
     try:
         seconds = int(float(Path("/proc/uptime").read_text().split()[0]))
@@ -761,6 +794,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             elif path == "/api/status":
                 self.send_json(get_status())
+            elif path == "/api/history":
+                self.send_json({"cpu": list(_cpu_history), "battery": read_battery_history_points()})
             elif path == "/api/ap":
                 config = read_ap_config()
                 config["active"] = ap_is_active()
@@ -844,4 +879,5 @@ if __name__ == "__main__":
     except OSError:
         pass
     server = ThreadingHTTPServer(("127.0.0.1", 8080), Handler)
+    threading.Thread(target=cpu_history_sampler, daemon=True).start()
     server.serve_forever()

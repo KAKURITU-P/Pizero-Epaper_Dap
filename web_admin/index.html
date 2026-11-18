@@ -30,6 +30,10 @@
     .status-item small { display: block; color: #6e6e6e; }
     .status-item strong { overflow-wrap: anywhere; white-space: pre-line; }
     .status-item.wide { grid-column: span 2; }
+    .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; }
+    .chart-box { background: #f5f5f5; border: 1px solid #e2e2e2; border-radius: 2px; padding: 10px; }
+    .chart-box small { display: block; color: #6e6e6e; }
+    .chart-box svg { display: block; width: 100%; height: 60px; color: #555; }
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
     #qr { width: 150px; height: 150px; image-rendering: pixelated; background: white; border: 1px solid #ddd; }
     .network-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
@@ -119,7 +123,7 @@
       :root { color: #e6e6e6; background: #141414; }
       header { background: #212121; color: #e6e6e6; }
       section { background: #1d1d1d; border-color: #3a3a3a; }
-      .status-item, .favorite-row, .favorite-tree details { background: #262626; }
+      .status-item, .favorite-row, .favorite-tree details, .chart-box { background: #262626; }
       .favorite-tree details { border-color: #4a4a4a; }
       .favorite-tree summary { color: #e6e6e6; }
       .muted, .status-item small { color: #a8a8a8; }
@@ -135,6 +139,12 @@
       <div id="status" class="status-grid"><div class="status-item">読み込み中…</div></div>
       <p id="codec" class="muted"></p>
       <p id="status-message" class="message"></p>
+      <h2>グラフ</h2>
+      <div class="chart-grid">
+        <div class="chart-box"><small>CPU使用率 (直近5分)</small><svg id="cpu-chart" viewBox="0 0 280 60" preserveAspectRatio="none"></svg></div>
+        <div class="chart-box"><small>バッテリー残量 (直近5時間)</small><svg id="battery-chart" viewBox="0 0 280 60" preserveAspectRatio="none"></svg></div>
+      </div>
+      <p id="history-note" class="muted"></p>
     </section>
 
     <div class="settings-panels">
@@ -264,6 +274,27 @@
         }
         $("codec").textContent = "";
       } catch (error) { message("status-message", error.message, "error"); }
+    }
+    // グラフ: 値の配列をSVGのスパークラインに描く(0〜max、新しい値が右端)。
+    function drawSpark(svg, values, max = 100) {
+      if (!values || values.length < 2) { svg.replaceChildren(); return; }
+      const w = 280, h = 60;
+      const pts = values.map((v, i) => {
+        const y = h - (h * Math.min(max, Math.max(0, v))) / max;
+        return `${((i * w) / (values.length - 1)).toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+      svg.innerHTML = `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5"/>`;
+    }
+    async function refreshHistory() {
+      try {
+        const h = await api("/api/history");
+        drawSpark($("cpu-chart"), h.cpu || []);
+        const battery = h.battery || [];
+        drawSpark($("battery-chart"), battery.map(entry => entry[1]));
+        const notes = [];
+        if (battery.length && battery.length < 150) notes.push(`バッテリー履歴は記録中 ${battery.length}/150 (2分ごと)`);
+        $("history-note").textContent = notes.join(" / ");
+      } catch (error) { /* グラフは非クリティカルなので失敗は無視する */ }
     }
     async function loadAp() {
       try {
@@ -625,9 +656,9 @@
         $("github-update").disabled = false;
       }
     };
-    loadAp(); loadFavorites(); refreshStatus(); runGithubCheck(false);
+    loadAp(); loadFavorites(); refreshStatus(); refreshHistory(); runGithubCheck(false);
     // 状態の取得は外部コマンドを多数起動するため、30秒ごと・タブが見えている間だけ行う。
-    setInterval(() => { if (!document.hidden) refreshStatus(); }, 30000);
+    setInterval(() => { if (!document.hidden) refreshHistory(); }, 30000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
   </script>
 </body>
