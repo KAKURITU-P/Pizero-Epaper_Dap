@@ -34,6 +34,8 @@ Raspberry Pi Zero W / 2 W と 2.13 インチ電子ペーパー（Waveshare 2.13i
 | **接続設定** | Bluetooth設定、APモード、Wi-Fi の ON/OFF |
 | **システム設定** | 電源メニュー（再起動・シャットダウン）、GitHub 更新、リソース表示（RAM/ROM・CPU/温度・バッテリー残量グラフ）、隠し機能 |
 
+ボタン操作の詳細とメニュー遷移図は [docs/OPERATION.md](docs/OPERATION.md) を参照してください。
+
 ### Bluetooth 音声
 
 - **AVRCP 対応**：BT イヤホン側の再生/一時停止・曲送り・曲戻しボタンをそのまま受付（BlueZ が生成する AVRCP uinput デバイスを監視）
