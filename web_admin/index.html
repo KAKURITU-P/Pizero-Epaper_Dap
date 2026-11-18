@@ -277,19 +277,26 @@
       } catch (error) { message("status-message", error.message, "error"); }
     }
     // グラフ: 値の配列をSVGのスパークラインに描く(0〜max、新しい値が右端)。
-    // 25%刻みのグリッド線と枠を引き、上下に余白を空けて満曲/0%の線が枠に張り付かないようにする。
+    // 25%刻みのグリッド線+左端に0/50/100の目盛り数値。上下に余白を空けて
+    // 満充電/0%の線が枠に張り付かないようにする。
     function drawSpark(svg, values, max = 100) {
-      const w = 280, h = 60, pad = 5;
+      const w = 280, h = 60, pad = 5, labelW = 26;
       const plotH = h - pad * 2;
       let inner = "";
-      for (let i = 1; i < 4; i++) {
-        const y = (pad + (plotH * i) / 4).toFixed(1);
-        inner += `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="currentColor" stroke-opacity="0.18" stroke-width="1"/>`;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad + (plotH * i) / 4;
+        inner += `<line x1="${labelW}" y1="${y.toFixed(1)}" x2="${w}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-opacity="0.18" stroke-width="1"/>`;
+        if (i % 2 === 0) {   // 目盛り数値は0/50/100だけ打つ
+          const label = Math.round(max - (max * i) / 4);
+          const ty = Math.min(h - 1, y + 3);
+          inner += `<text x="3" y="${ty.toFixed(1)}" font-size="9" fill="currentColor" fill-opacity="0.5">${label}</text>`;
+        }
       }
       if (values && values.length >= 2) {
         const pts = values.map((v, i) => {
+          const x = labelW + ((w - labelW) * i) / (values.length - 1);
           const y = pad + plotH - (plotH * Math.min(max, Math.max(0, v))) / max;
-          return `${((i * w) / (values.length - 1)).toFixed(1)},${y.toFixed(1)}`;
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
         }).join(" ");
         inner += `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5"/>`;
       } else {
