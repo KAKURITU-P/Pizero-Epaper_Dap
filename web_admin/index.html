@@ -33,7 +33,7 @@
     .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; }
     .chart-box { background: #f5f5f5; border: 1px solid #e2e2e2; border-radius: 2px; padding: 10px; }
     .chart-box small { display: block; color: #6e6e6e; }
-    .chart-box svg { display: block; width: 100%; height: 60px; color: #555; }
+    .chart-box svg { display: block; width: 100%; height: 60px; color: #555; background: white; border: 1px solid #ddd; }
     .qr-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
     #qr { width: 150px; height: 150px; image-rendering: pixelated; background: white; border: 1px solid #ddd; }
     .network-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
@@ -124,6 +124,7 @@
       header { background: #212121; color: #e6e6e6; }
       section { background: #1d1d1d; border-color: #3a3a3a; }
       .status-item, .favorite-row, .favorite-tree details, .chart-box { background: #262626; }
+      .chart-box svg { background: #1d1d1d; border-color: #3a3a3a; color: #c2c2c2; }
       .favorite-tree details { border-color: #4a4a4a; }
       .favorite-tree summary { color: #e6e6e6; }
       .muted, .status-item small { color: #a8a8a8; }
@@ -276,14 +277,25 @@
       } catch (error) { message("status-message", error.message, "error"); }
     }
     // グラフ: 値の配列をSVGのスパークラインに描く(0〜max、新しい値が右端)。
+    // 25%刻みのグリッド線と枠を引き、上下に余白を空けて満曲/0%の線が枠に張り付かないようにする。
     function drawSpark(svg, values, max = 100) {
-      if (!values || values.length < 2) { svg.replaceChildren(); return; }
-      const w = 280, h = 60;
-      const pts = values.map((v, i) => {
-        const y = h - (h * Math.min(max, Math.max(0, v))) / max;
-        return `${((i * w) / (values.length - 1)).toFixed(1)},${y.toFixed(1)}`;
-      }).join(" ");
-      svg.innerHTML = `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5"/>`;
+      const w = 280, h = 60, pad = 5;
+      const plotH = h - pad * 2;
+      let inner = "";
+      for (let i = 1; i < 4; i++) {
+        const y = (pad + (plotH * i) / 4).toFixed(1);
+        inner += `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="currentColor" stroke-opacity="0.18" stroke-width="1"/>`;
+      }
+      if (values && values.length >= 2) {
+        const pts = values.map((v, i) => {
+          const y = pad + plotH - (plotH * Math.min(max, Math.max(0, v))) / max;
+          return `${((i * w) / (values.length - 1)).toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        inner += `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5"/>`;
+      } else {
+        inner += `<text x="50%" y="55%" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity="0.55">記録中…</text>`;
+      }
+      svg.innerHTML = inner;
     }
     async function refreshHistory() {
       try {
