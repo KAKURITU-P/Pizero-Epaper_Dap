@@ -4598,7 +4598,8 @@ try:
                     last_drawn_segment = current_segment
                     request_display_update(is_full_refresh=False)
 
-            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ", *RESOURCE_SCREENS] and (now - last_user_action_time > 10):
+            if current_screen not in ["PLAY", "CAT_CLOCK", "CAT_EQ", "MENU_GUIDE", *RESOURCE_SCREENS] and (now - last_user_action_time > 10):
+                # ガイドは読みながら操作する画面なので10秒自動復帰の対象外
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
 
