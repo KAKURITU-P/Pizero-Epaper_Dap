@@ -111,9 +111,9 @@ if [[ "$(readlink -f /etc/nginx/sites-enabled/default 2>/dev/null || true)" == "
 fi
 
 echo "=== systemd サービスを登録 ==="
-sudo install -o root -g root -m 0644 "$DAP_DIR/dap.service" /etc/systemd/system/dap.service
-sudo install -o root -g root -m 0644 "$DAP_DIR/battery-monitor.service" /etc/systemd/system/battery-monitor.service
-sudo install -o root -g root -m 0644 "$DAP_DIR/dap-admin.service" /etc/systemd/system/dap-admin.service
+sudo install -o root -g root -m 0644 "$DAP_DIR/services/dap.service" /etc/systemd/system/dap.service
+sudo install -o root -g root -m 0644 "$DAP_DIR/services/battery-monitor.service" /etc/systemd/system/battery-monitor.service
+sudo install -o root -g root -m 0644 "$DAP_DIR/services/dap-admin.service" /etc/systemd/system/dap-admin.service
 sudo systemctl daemon-reload
 sudo systemctl enable dap.service
 sudo systemctl enable --now battery-monitor.service

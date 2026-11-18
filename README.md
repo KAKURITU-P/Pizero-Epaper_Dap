@@ -98,26 +98,17 @@ dtoverlay=i2c-gpio,bus=3,i2c_gpio_sda=23,i2c_gpio_scl=4
 .
 ├── dap_daemon.py         # DAP メイン制御デーモン（Pygame / GPIO / e-Paper / AVRCP）
 ├── battery_monitor.py    # バッテリー電圧の定期記録サービス
-├── battery_utils.py      # バッテリー状態ファイルの読み取り
-├── audio_device_utils.py # USB オーディオデバイス検出・サンプルレート選択
-├── bluealsa_utils.py     # BlueALSA / ALSA 設定生成ユーティリティ
-├── font_utils.py         # フォント検出と読み込み
-├── icon_utils.py         # スプライトシートからのアイコン切り出し
-├── render_utils.py       # 表示用テキスト整形（幅合わせ省略・時間・サイズ）
-├── system_stats_utils.py # SoC 温度・負荷・メモリ等の取得
-├── network_parse_utils.py# Wi-Fi / Bluetooth / AP の状態解析
-├── version_utils.py      # git タグから表示用バージョンを取得
 ├── web_admin_server.py   # Web 管理画面 API
+├── *_utils.py            # デーモンから分離した純粋ユーティリティ（単体テスト付き）
 ├── web_admin/            # Web 管理画面
+├── assets/               # スプライトシート・画像（ships.png / shuffle_repeat.png / web.png）
+├── services/             # systemd ユニットファイル（setup.sh がインストール）
 ├── dbus/                 # AVRCP 用 D-Bus ポリシー
 ├── setup.sh              # 初回セットアップ（依存関係・ドライバー・systemd）
 ├── ap_config.json.sample # AP の既定設定（実ファイルは setup.sh が生成）
-├── tools/                # セットアップ・保守用スクリプト
+├── tools/                # セットアップ・保守・テスト用スクリプト（gpio_test.py 等）
 ├── docs/                 # BlueALSA の追加手順・回路図
-├── tests/                # ユーティリティの単体テスト
-├── stereo_test.py        # L/R ステレオ位相・チャンネル確認用ツール
-├── gpio_test.py          # GPIO ボタン入力確認用テストスクリプト
-└── gpio_check.py         # GPIO ピン状態チェックツール
+└── tests/                # ユーティリティの単体テスト
 ```
 
 ---

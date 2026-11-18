@@ -106,7 +106,7 @@ from render_utils import (  # noqa: E402
 )
 from version_utils import get_display_version  # noqa: E402
 
-SHIPS_PNG_PATH = os.path.join(BASE_DIR, "ships.png")
+SHIPS_PNG_PATH = os.path.join(BASE_DIR, "assets", "ships.png")
 
 # --- mutagen によるメタデータ取得 ---
 try:
@@ -372,7 +372,7 @@ font_main   = get_font(FONT_PATH, 14)
 font_small  = get_font(FONT_PATH, 12)
 font_clock  = get_font(FONT_PATH, 30)
 
-playback_mode_icons = load_playback_mode_icons(os.path.join(BASE_DIR, "shuffle_repeat.png"))
+playback_mode_icons = load_playback_mode_icons(os.path.join(BASE_DIR, "assets", "shuffle_repeat.png"))
 
 # --- 4. 音楽ライブラリ & お気に入り & レジューム ---
 MUSIC_DIR = os.path.expanduser("~/music")

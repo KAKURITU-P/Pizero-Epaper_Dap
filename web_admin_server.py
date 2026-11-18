@@ -22,8 +22,8 @@ from system_stats_utils import cpu_usage_percent, parse_cpu_times, per_core_load
 BASE_DIR = Path(__file__).resolve().parent
 AP_CONFIG = BASE_DIR / "ap_config.json"
 PAGE_FILE = BASE_DIR / "web_admin" / "index.html"
-PHOTO_FILE = BASE_DIR / "ships.png"
-WEB_PHOTO_FILE = BASE_DIR / "web.png"
+PHOTO_FILE = BASE_DIR / "assets" / "ships.png"
+WEB_PHOTO_FILE = BASE_DIR / "assets" / "web.png"
 GITHUB_REPOSITORY = "KAKURITU-P/Pizero-Epaper_Dap"
 GITHUB_RELEASES_URL = (
     f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
