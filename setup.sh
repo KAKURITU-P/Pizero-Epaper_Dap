@@ -89,6 +89,14 @@ if command -v systemctl >/dev/null 2>&1; then
     sudo systemctl reload dbus || sudo killall -HUP dbus-daemon || true
 fi
 
+echo "=== Wi-Fi 省電力モードを無効化(mDNS/マルチキャスト安定化) ==="
+# 省電力モードが有効だと mDNS(dap.local) の応答が落ちることがあるため無効化する。
+sudo install -d -m 0755 /etc/NetworkManager/conf.d
+printf '[connection]
+wifi.powersave = 2
+' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave.conf >/dev/null
+sudo systemctl restart NetworkManager || true
+
 echo "=== DAP サービス用 sudo 権限を設定 ==="
 sudo install -o root -g root -m 0755 "$DAP_DIR/tools/dap-web-wifi.py" /usr/local/sbin/dap-web-wifi
 sudo bash "$DAP_DIR/tools/configure_dap_sudoers.sh"

@@ -90,19 +90,21 @@ def main():
                 startup_grace_count -= 1
                 logging.info(f"Startup grace period remaining: {startup_grace_count}")
             else:
-                # --- 0%が3回続いたらシャットダウンする安全装置 ---
-                if percent <= 0:
+                # --- 低残量が3回続いたらシャットダウンする安全装置 ---
+                # 0%(3.3V)ギリギリだと負荷変動でブラウンアウトが先に来るため、
+                # 3%(約3.32V)で早めに安全停止する。
+                if percent <= 3:
                     zero_percent_count += 1
-                    logging.warning(f"Battery 0% detected! Count: {zero_percent_count}/{REQUIRED_COUNT}")
-                    
+                    logging.warning(f"Low battery detected! Count: {zero_percent_count}/{REQUIRED_COUNT}")
+
                     if zero_percent_count >= REQUIRED_COUNT:
-                        logging.critical("Battery exhausted. Initiating safe shutdown...")
+                        logging.critical("Battery low. Initiating safe shutdown...")
                         publish("SHUTTING DOWN")
                         time.sleep(1)
                         os.system("sudo shutdown -h now")
                         break
                 else:
-                    # 0%じゃなくなったらカウンターをリセット
+                    # 低残量じゃなくなったらカウンターをリセット
                     if zero_percent_count > 0:
                         zero_percent_count = 0
 
