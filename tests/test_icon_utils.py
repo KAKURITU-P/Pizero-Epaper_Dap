@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
+    from PIL import Image
     from icon_utils import get_cropped_ship, load_playback_mode_icons
     HAS_PIL = True
 except ImportError:
