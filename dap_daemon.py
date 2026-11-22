@@ -4573,7 +4573,10 @@ try:
         filepath = playlist[current_track_idx]
         total_duration_sec = get_track_duration_sec(filepath)
         try:
-            pygame.mixer.music.load(filepath)
+            # ミキサー未初期化(USB DAC未接続の起動直後など)では読み飛ばす。
+            # 再生時はplay_current_trackが改めてロードするので実害はない。
+            if pygame.mixer.get_init():
+                pygame.mixer.music.load(filepath)
         except Exception as e:
             print(f"Resume load error: {e}")
 

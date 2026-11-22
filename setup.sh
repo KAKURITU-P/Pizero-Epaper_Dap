@@ -137,6 +137,11 @@ sudo systemctl enable --now nginx.service
 sudo systemctl reload nginx.service
 
 echo
+echo "=== 旧バッテリーユニットの掃除 ==="
+# 旧セットアップ世代の重複ユニットが残っていると battery_monitor.py が
+# 二重実行されて履歴が二重書き込みになるため、無効化してから進む。
+sudo systemctl disable --now battery-status.service systemd-battery-check.service 2>/dev/null || true
+
 echo "=== I2C bus 3 (バッテリー監視) を確認 ==="
 if [[ -e /dev/i2c-3 ]]; then
     echo "I2C bus 3 を検出しました。"
