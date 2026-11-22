@@ -814,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/wifi/scan":
                 self.send_json({"networks": scan_wifi()})
             elif path == "/api/wifi/profiles":
-                self.send_json({"profiles": list_wifi_profiles()})
+                self.send_json(list_wifi_profiles())
             elif path == "/api/update":
                 self.send_json(get_github_update())
             elif path == "/api/update/check":

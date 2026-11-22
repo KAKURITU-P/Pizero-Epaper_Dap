@@ -109,7 +109,8 @@ def list_profiles(request):
             "active": bool(device.strip()),
         })
     profiles.sort(key=lambda item: (not item["active"], item["ssid"].casefold()))
-    return profiles
+    # 他のアクションと同様にokラッパー付きで返す(サーバ側の応答解析はdict前提)
+    return {"ok": True, "profiles": profiles}
 
 
 def require_wifi_profile(name):
