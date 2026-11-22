@@ -425,6 +425,24 @@ def run_wifi_helper(request, timeout=30):
     return response
 
 
+PLAYBACK_STATUS_FILE = "/tmp/dap_playback.json"
+PLAYBACK_COMMAND_FILE = "/tmp/dap_command.json"
+
+def read_playback_status():
+    """デーモンが公開する再生状態(dap_playback.json)を読む。無ければNone。"""
+    try:
+        with open(PLAYBACK_STATUS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+def queue_playback_toggle():
+    """デーモンへの再生/一時停止コマンドファイルを置いて渡す。"""
+    temp_file = PLAYBACK_COMMAND_FILE + ".tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump({"action": "toggle"}, f, ensure_ascii=False)
+    os.replace(temp_file, PLAYBACK_COMMAND_FILE)
+
 def scan_wifi():
     if ap_is_active():
         raise RuntimeError("APモード中はWi-Fi一覧を検索できません。APをOFFにしてください")
@@ -790,7 +808,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
             elif path == "/api/status":
-                self.send_json(get_status())
+                status = get_status()
+                # 再生状態はデーモンが書く都度変わるため8秒キャッシュの外で差し込む
+                status["playback"] = read_playback_status()
+                self.send_json(status)
             elif path == "/api/history":
                 self.send_json({"cpu": list(_cpu_history), "battery": read_battery_history_points()})
             elif path == "/api/ap":
@@ -838,6 +859,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(saved)
             elif path == "/api/wifi/profile":
                 self.send_json(operate_wifi_profile(payload))
+            elif path == "/api/playback/toggle":
+                queue_playback_toggle()
+                self.send_json({"queued": True})
             elif path == "/api/update":
                 start_github_update()
                 self.send_json(get_github_update(), 202)

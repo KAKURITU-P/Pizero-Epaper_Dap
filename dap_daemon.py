@@ -531,6 +531,54 @@ def save_favorites():
         except OSError:
             pass
 
+# --- Web管理画面向けの再生状態ファイルと操作ファイル(/tmpはtmpfs) ---
+PLAYBACK_STATUS_FILE = "/tmp/dap_playback.json"
+PLAYBACK_COMMAND_FILE = "/tmp/dap_command.json"
+_last_playback_payload = None
+
+def publish_playback_status():
+    """再生状態をWeb管理画面向けに書き出す。内容が変わったときだけ書く。"""
+    global _last_playback_payload
+    with state_lock:
+        if playlist and current_track_idx < len(playlist):
+            title = os.path.splitext(os.path.basename(playlist[current_track_idx]))[0]
+        else:
+            title = ""
+        payload = {
+            "title": title,
+            "playing": is_playing,
+            "position_sec": get_current_sec(),
+            "duration_sec": total_duration_sec,
+            "output_mode": audio_output_mode,
+        }
+    if payload == _last_playback_payload:
+        return
+    _last_playback_payload = payload
+    temp_file = PLAYBACK_STATUS_FILE + ".tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp_file, PLAYBACK_STATUS_FILE)
+    except OSError as error:
+        print(f"Playback status publish error: {error}")
+
+def consume_playback_command():
+    """Web管理画面からの再生操作コマンド(toggle)を消費する。"""
+    if not os.path.exists(PLAYBACK_COMMAND_FILE):
+        return
+    try:
+        with open(PLAYBACK_COMMAND_FILE, "r", encoding="utf-8") as f:
+            command = json.load(f)
+    except (OSError, ValueError) as error:
+        print(f"Playback command read error: {error}")
+        command = {}
+    try:
+        os.remove(PLAYBACK_COMMAND_FILE)
+    except OSError:
+        pass
+    if command.get("action") == "toggle":
+        avrcp_toggle()
+
 def sync_favorites():
     """管理画面など別プロセスによるお気に入り更新を取り込む"""
     try:
@@ -4536,6 +4584,7 @@ threading.Thread(target=audio_worker_thread, daemon=True).start()
 threading.Thread(target=system_resource_monitor_thread, daemon=True).start()
 threading.Thread(target=audio_output_watchdog_thread, daemon=True).start()
 
+_playback_publish_tick = 0
 try:
     # 起動時のレジューム処理（自動で前回の曲を先頭から準備）
     if playlist:
@@ -4560,6 +4609,11 @@ try:
             sys.exit(0)
         now = time.time()
         sync_favorites()
+        # Web管理画面向け: 再生状態の公開(5秒ごと)と操作コマンドの消費
+        _playback_publish_tick += 1
+        if _playback_publish_tick % 25 == 1:
+            publish_playback_status()
+        consume_playback_command()
         # 予約済みのsettings.json書き込み(delay後)をここで確実に実行する。
         if _settings_save_dirty and now >= _settings_save_due:
             flush_pending_settings_save()

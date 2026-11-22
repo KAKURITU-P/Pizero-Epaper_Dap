@@ -44,6 +44,7 @@
     .wifi-profile-row small { display: block; color: #6e6e6e; }
     .wifi-profile-actions { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
     .wifi-profile-actions button { padding: 6px 9px; font-size: .88rem; }
+    .playback-card button { margin-top: 8px; width: 100%; }
     .favorite-list, .favorite-tree {
       display: grid;
       gap: 6px;
@@ -272,6 +273,28 @@
         const storage = s.storage ? `${size(s.storage.used)} / ${size(s.storage.total)} (${s.storage.percent}%)` : "取得できません";
         $("status").innerHTML = "";
         const devices = (s.bluetooth_devices || "").replace(/^Device\s+[0-9A-Fa-f:]{17}\s*/gm, "").trim() || "なし";
+        // 再生中カード: デーモンが公開する再生状態を表示し、トグルで本体側に操作を依頼する
+        if (s.playback && s.playback.title) {
+          const pb = s.playback;
+          const fmt = sec => { sec = Math.max(0, sec|0); const m = Math.floor(sec / 60); const s2 = sec % 60;
+            return (m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}` : `${m}`) + `:${String(s2).padStart(2, "0")}`; };
+          const item = document.createElement("div"); item.className = "status-item wide playback-card";
+          const small = document.createElement("small"); small.textContent = pb.playing ? "再生中" : "一時停止中";
+          const strong = document.createElement("strong");
+          strong.textContent = pb.duration_sec ? `${pb.title} (${fmt(pb.position_sec)} / ${fmt(pb.duration_sec)})` : pb.title;
+          const btn = document.createElement("button"); btn.className = "secondary";
+          btn.textContent = pb.playing ? "一時停止" : "再生";
+          btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+              await api("/api/playback/toggle", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+              setTimeout(refreshStatus, 800);
+            } catch (error) { message("status-message", error.message, "error"); }
+            finally { setTimeout(() => { btn.disabled = false; }, 800); }
+          };
+          item.append(small, strong, btn);
+          $("status").append(item);
+        }
         // 状態カードは「今その瞬間に意味のあるもの」だけを表示する。
         //  - APモードON  : Wi-Fi(クライアント情報)は非表示、APモードを表示
         //  - APモードOFF : Wi-Fiを表示、APモード(OFFと表示するだけ)は非表示
