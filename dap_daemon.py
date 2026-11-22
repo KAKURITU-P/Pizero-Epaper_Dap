@@ -4093,11 +4093,22 @@ def audio_output_watchdog_thread():
             print(f"Audio watchdog error: {error}")
             time.sleep(2.0)
 
+def shuffled_order(tracks):
+    """シャッフル順を作る。直近の再生履歴(ユニーク8曲)は順序の末尾に寄せ、
+    最近聴いた曲がすぐ再登場しないようにする。"""
+    order = random.sample(list(tracks), len(tracks))
+    if playback_history:
+        recent = set(playback_history[:8])
+        fresh = [track for track in order if track not in recent]
+        stale = [track for track in order if track in recent]
+        order = fresh + stale
+    return order
+
 def set_playback_playlist(tracks, selected_path=None, start_index=0):
     """Set the active source list, applying shuffle only within that list."""
     global playlist, playlist_base, current_track_idx
     playlist_base = list(tracks)
-    playlist = random.sample(playlist_base, len(playlist_base)) if is_shuffle else list(playlist_base)
+    playlist = shuffled_order(playlist_base) if is_shuffle else list(playlist_base)
     if selected_path in playlist:
         current_track_idx = playlist.index(selected_path)
     elif playlist:
@@ -4111,7 +4122,7 @@ def toggle_shuffle():
     current_song = playlist[current_track_idx] if playlist else None
     if not playlist_base:
         playlist_base = list(playlist)
-    playlist = random.sample(playlist_base, len(playlist_base)) if is_shuffle else list(playlist_base)
+    playlist = shuffled_order(playlist_base) if is_shuffle else list(playlist_base)
     if current_song and current_song in playlist:
         current_track_idx = playlist.index(current_song)
     save_settings()
