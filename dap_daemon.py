@@ -344,7 +344,8 @@ def clean_shutdown_display(message="Power Off..."):
 def handle_signal(sig, frame):
     global shutdown_exit_requested
     shutdown_exit_requested = True
-    # 再生を即停止し、再開位置と累計統計を確定させてから演出へ(失敗しても続ける)
+    # 再生を即停止し、累計統計を確定させてから演出へ(失敗しても続ける)。
+    # 再開位置は保存しない(再起動後は曲の頭から再生する仕様)。
     try:
         with try_state_lock(timeout=2) as locked:
             if locked:
@@ -354,7 +355,6 @@ def handle_signal(sig, frame):
                 except Exception:
                     pass
                 save_playback_history()
-                save_resume_state()
     except Exception:
         pass
     clean_shutdown_display("Shutting down...")
@@ -657,8 +657,6 @@ def save_resume_state():
                 "track_idx": current_track_idx,
                 "playlist": [_rel(path) for path in playlist],
                 "playlist_base": [_rel(path) for path in (playlist_base or playlist)],
-                # 曲内位置も保存し、電池切れ等の突然の電源断後も途中から再開できるようにする
-                "position_sec": max(0, int(get_current_sec())),
             }
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
@@ -675,9 +673,6 @@ def save_resume_state():
 
 def load_resume_state():
     global current_track_idx, playlist, playlist_base
-    global resume_position_sec, resume_pending
-    resume_position_sec = 0
-    resume_pending = False
     if os.path.exists(RESUME_FILE):
         try:
             with open(RESUME_FILE, "r", encoding="utf-8") as f:
@@ -703,11 +698,6 @@ def load_resume_state():
                         if not playlist_base:
                             playlist_base = list(restored)
                         current_track_idx = playlist.index(target)
-                        try:
-                            resume_position_sec = max(0, int(data.get("position_sec") or 0))
-                        except (TypeError, ValueError):
-                            resume_position_sec = 0
-                        resume_pending = resume_position_sec > 0
                         return
                 # Older resume files saved only the track path. If that track is
                 # favorited, use the favorite list as the best available context.
@@ -865,9 +855,7 @@ load_resume_state()
 start_time = 0.0
 paused_duration = 0.0
 pause_start_time = 0.0
-# 起動時にresume.jsonの曲内位置を復元(PLAY画面に位置が表示され、
-# 最初の再生でその位置から再開する)。resume.jsonに無ければ0。
-track_paused_time = resume_position_sec
+track_paused_time = 0
 total_duration_sec = 0
 last_drawn_segment = -1
 
@@ -1197,9 +1185,6 @@ def system_resource_monitor_thread():
             # 聴取時間の累計(1秒ごと)。一時停止中(pause_start_time>0)はカウントしない。
             if is_playing and pause_start_time == 0:
                 play_stats["total_sec"] += 1
-            # 再開位置を30秒ごとに保存(電池切れ等の突然の電源断に備える)
-            if tick % 30 == 0 and is_playing and pause_start_time == 0 and playlist:
-                save_resume_state()
             if tick % 5 == 0:
                 sample_menu_info_values()
                 sample_system_resource_usage()
@@ -3707,7 +3692,6 @@ def reset_inactivity_timer():
 def play_current_track(full_refresh=False):
     global is_playing, total_duration_sec, track_paused_time, last_drawn_segment
     global start_time, paused_duration, pause_start_time, status_message
-    global resume_pending
     if playlist:
         if not pygame.mixer.get_init():
             safe_init_audio()
@@ -3720,30 +3704,15 @@ def play_current_track(full_refresh=False):
 
         filepath = playlist[current_track_idx]
         total_duration_sec = get_track_duration_sec(filepath)
-        # 起動後の最初の再生のみ、resume.jsonに保存された曲内位置から再開する
-        start_pos = 0
-        if resume_pending and track_paused_time > 0:
-            start_pos = int(track_paused_time)
-            if 0 < total_duration_sec <= start_pos:
-                start_pos = max(0, total_duration_sec - 1)
-        resume_pending = False
         track_paused_time = 0
         last_drawn_segment = -1
-        start_time = time.time() - start_pos
+        start_time = time.time()
         paused_duration = 0.0
         pause_start_time = 0.0
 
         try:
             pygame.mixer.music.load(filepath)
-            if start_pos > 0:
-                try:
-                    pygame.mixer.music.play(start=start_pos)
-                except Exception as seek_error:
-                    print(f"位置指定の再生に失敗、曲頭から再生します: {seek_error}")
-                    start_time = time.time()
-                    pygame.mixer.music.play()
-            else:
-                pygame.mixer.music.play()
+            pygame.mixer.music.play()
             is_playing = True
             record_playback_history(filepath)
             save_resume_state()
