@@ -262,6 +262,22 @@
       for (const next of ["KB", "MB", "GB", "TB"]) { if (value < 1024) break; value /= 1024; unit = next; }
       return `${value.toFixed(1)} ${unit}`;
     }
+    // --- 再生中カード: デーモン公開値を元に、再生中は1秒ごとに時間を補間表示する ---
+    let playbackState = null, playbackFetchedAt = 0;
+    const fmtTime = sec => {
+      sec = Math.max(0, Math.floor(sec));
+      const m = Math.floor(sec / 60), s2 = sec % 60;
+      return (m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}` : `${m}`) + `:${String(s2).padStart(2, "0")}`;
+    };
+    const updatePlaybackTime = () => {
+      const el = $("playback-time");
+      if (!el || !playbackState || !playbackState.duration_sec) return;
+      const drift = playbackState.playing ? (Date.now() - playbackFetchedAt) / 1000 : 0;
+      const pos = Math.min(playbackState.duration_sec, playbackState.position_sec + drift);
+      el.textContent = ` (${fmtTime(pos)} / ${fmtTime(playbackState.duration_sec)})`;
+    };
+    setInterval(updatePlaybackTime, 1000);
+
     async function refreshStatus() {
       try {
         const s = await api("/api/status");
@@ -276,12 +292,13 @@
         // 再生中カード: デーモンが公開する再生状態を表示し、トグルで本体側に操作を依頼する
         if (s.playback && s.playback.title) {
           const pb = s.playback;
-          const fmt = sec => { sec = Math.max(0, sec|0); const m = Math.floor(sec / 60); const s2 = sec % 60;
-            return (m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}` : `${m}`) + `:${String(s2).padStart(2, "0")}`; };
+          playbackState = pb; playbackFetchedAt = Date.now();
           const item = document.createElement("div"); item.className = "status-item wide playback-card";
           const small = document.createElement("small"); small.textContent = pb.playing ? "再生中" : "一時停止中";
-          const strong = document.createElement("strong");
-          strong.textContent = pb.duration_sec ? `${pb.title} (${fmt(pb.position_sec)} / ${fmt(pb.duration_sec)})` : pb.title;
+          const strong = document.createElement("strong"); strong.textContent = pb.title;
+          const timeEl = document.createElement("span");
+          timeEl.id = "playback-time"; timeEl.className = "muted";
+          updatePlaybackTime();
           const btn = document.createElement("button"); btn.className = "secondary";
           btn.textContent = pb.playing ? "一時停止" : "再生";
           btn.onclick = async () => {
@@ -292,8 +309,10 @@
             } catch (error) { message("status-message", error.message, "error"); }
             finally { setTimeout(() => { btn.disabled = false; }, 800); }
           };
-          item.append(small, strong, btn);
+          item.append(small, strong, timeEl, btn);
           $("status").append(item);
+        } else {
+          playbackState = null;
         }
         // 状態カードは「今その瞬間に意味のあるもの」だけを表示する。
         //  - APモードON  : Wi-Fi(クライアント情報)は非表示、APモードを表示

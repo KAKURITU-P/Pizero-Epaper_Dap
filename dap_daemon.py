@@ -118,6 +118,7 @@ except ImportError:
 # 接続先 MAC アドレス。未選択のまま「BTに変更」した場合に他人の機器へ
 # ペアリング試行しないよう、既定値は空(=未選択)とする。
 connected_bt_mac = ""
+bt_volume_pct = None   # BT出力中にイヤホン側で変化した絶対音量の表示用(0-100)
 
 # 出力デバイス(USB DAC / Bluetooth)が消えてmixerを止めている間はTrue。
 audio_output_lost = False
@@ -1261,8 +1262,30 @@ def sample_menu_info_values():
     except Exception as error:
         print(f"BT codec check error: {error}")
 
+def read_bt_device_volume():
+    """接続中BT機器の絶対音量(0-100%)を返す(未接続・取得失敗はNone)。
+
+    イヤホン側の音量ボタンはAVDTPの絶対音量を変えるため、これを拾うと
+    e-PaperのVOL表示にイヤホン側の音量操作を反映できる。
+    """
+    if not connected_bt_mac:
+        return None
+    try:
+        res = subprocess.check_output(
+            ["bluetoothctl", "info", connected_bt_mac],
+            text=True, errors="ignore", timeout=5,
+        )
+        match = re.search(r"Volume:\s*0x[0-9a-fA-F]+\s*\((\d+)\)", res)
+        if match:
+            raw = int(match.group(1))
+            return round(raw / 127 * 100)
+    except Exception:
+        pass
+    return None
+
 def system_resource_monitor_thread():
     """画面を開いていなくても統計を貯め続ける。CPUは1秒、RAM/温度は5秒ごと。"""
+    global bt_volume_pct, volume_changed_at
     tick = 0
     while True:
         try:
@@ -1274,6 +1297,12 @@ def system_resource_monitor_thread():
                 sample_menu_info_values()
                 sample_system_resource_usage()
                 commit_cpu_temp_sample()
+                # BT出力中はイヤホン側の絶対音量を追跡し、変化したらVOL表示を出す
+                if audio_output_mode == "BT":
+                    bt_pct = read_bt_device_volume()
+                    if bt_pct is not None and bt_pct != bt_volume_pct:
+                        bt_volume_pct = bt_pct
+                        volume_changed_at = time.time()
                 with state_lock:
                     resource_screen_active = current_screen in RESOURCE_SCREENS
                 if resource_screen_active:
@@ -2274,6 +2303,7 @@ def display_worker():
                 sel_alb = selected_album
                 playing = is_playing
                 cur_vol = volume
+                bt_vol_snap = bt_volume_pct
                 output_mode = audio_output_mode
                 stat_msg = status_message
                 resource_stats = (
@@ -2357,7 +2387,11 @@ def display_worker():
                 # 右端スロット: 通常はバッテリー常設、音量変更後5秒はVOL表示に差し替わる。
                 # 取得不能("--%")のときは空欄にする。
                 if time.time() - volume_changed_at < 5.0:
-                    slot_str = f"VOL: {int(cur_vol * 100)}%"
+                    if output_mode == "BT" and bt_vol_snap is not None:
+                        # BT出力中はイヤホン側の絶対音量を優先表示
+                        slot_str = f"VOL: {bt_vol_snap}%"
+                    else:
+                        slot_str = f"VOL: {int(cur_vol * 100)}%"
                 else:
                     battery_pct, _ = get_battery_info()
                     slot_str = "" if battery_pct == "--%" else f"BAT: {battery_pct}"
