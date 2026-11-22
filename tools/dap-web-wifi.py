@@ -114,15 +114,20 @@ def list_profiles(request):
 
 
 def require_wifi_profile(name):
-    """対象プロファイルが存在しwifiタイプであることを確認する。"""
+    """対象プロファイルが存在しwifiタイプであることを確認する。
+
+    connection show <id> は詳細ビューなのでフィールド名はセクション形式
+    (connection.type 等)を使う。NAME/TYPEは一覧ビュー専用で、ここで使うと
+    "invalid field" で必ず失敗する。
+    """
     if not isinstance(name, str) or not name.strip():
         raise ValueError("プロファイル名が指定されていません")
-    result = run([NMCLI, "-t", "-f", "NAME,TYPE", "connection", "show", "id", name.strip()], 8)
+    result = run([NMCLI, "-t", "-f", "connection.type", "connection", "show", "id", name.strip()], 8)
     if result.returncode != 0:
         raise ValueError("指定のWi-Fiプロファイルが見つかりません")
     for line in result.stdout.splitlines():
         fields = parse_fields(line)
-        if len(fields) >= 2 and fields[0] == name.strip() and "wireless" in fields[1]:
+        if len(fields) >= 2 and fields[0] == "connection.type" and "wireless" in fields[1]:
             return name.strip()
     raise ValueError("指定のプロファイルはWi-Fiではありません")
 
