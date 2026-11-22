@@ -3266,21 +3266,39 @@ def connect_to_wifi(target):
             if not target_nmcli_id:
                 detail = "保存済みネットワークが見つかりません"
             else:
-                res = subprocess.run(
+                # nmcliはアクティベーション完了までブロックし、混雑時には40秒超える
+                # ことがある。終了を待つ代わりに実際の接続状態をポーリングして判定し、
+                # nmcliが長引けば切り上げる(NM側のアクティベーション自体は継続する)。
+                proc = subprocess.Popen(
                     ["nmcli", "connection", "up", "id", target_nmcli_id],
-                    capture_output=True, text=True, check=False, timeout=25,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 )
-                if res.returncode != 0:
-                    detail = (res.stderr or res.stdout or "NetworkManager接続失敗").strip()
-
-            if not detail:
-                deadline = time.monotonic() + 15
+                deadline = time.monotonic() + 40
                 while time.monotonic() < deadline:
                     if get_current_wifi_ssid() == target_ssid:
                         success = True
                         break
+                    if proc.poll() is not None:
+                        break
                     time.sleep(0.5)
-                if not success:
+                if proc.poll() is None:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                else:
+                    # nmcli終了後もSSIDの反映に僅かな遅れがあるため短く追いかける
+                    grace = time.monotonic() + 5
+                    while not success and time.monotonic() < grace:
+                        if get_current_wifi_ssid() == target_ssid:
+                            success = True
+                            break
+                        time.sleep(0.5)
+                    output = ((proc.stdout.read() or "") + (proc.stderr.read() or "")).strip()
+                    if not success and proc.returncode != 0:
+                        detail = (output or "NetworkManager接続失敗").strip()
+                if not success and not detail:
                     detail = "接続を確認できません"
         except (OSError, subprocess.SubprocessError, RuntimeError) as error:
             detail = str(error).strip()
