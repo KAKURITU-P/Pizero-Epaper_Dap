@@ -52,7 +52,11 @@ Cmnd_Alias DAP_POWER = \
 
 Cmnd_Alias DAP_WEB_WIFI = /usr/local/sbin/dap-web-wifi
 
-pi ALL=(root) NOPASSWD: DAP_RFKILL, DAP_SYSTEMCTL, DAP_PROCESS, DAP_NETWORK, DAP_POWER, DAP_WEB_WIFI
+Cmnd_Alias DAP_ASSETS = \
+    /usr/bin/install -o root -g root -m 0755 /home/pi/dap/tools/dap-web-wifi.py /usr/local/sbin/dap-web-wifi, \
+    /usr/bin/install -o root -g root -m 0644 /home/pi/dap/polkit/50-dap-network.rules /etc/polkit-1/rules.d/50-dap-network.rules
+
+pi ALL=(root) NOPASSWD: DAP_RFKILL, DAP_SYSTEMCTL, DAP_PROCESS, DAP_NETWORK, DAP_POWER, DAP_WEB_WIFI, DAP_ASSETS
 EOF
 
 chown root:root "$sudoers_tmp"

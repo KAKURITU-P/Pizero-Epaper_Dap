@@ -283,6 +283,43 @@ elif not safe_init_audio() and audio_output_mode == "BT":
     print("Bluetooth音声を初期化できません。接続され次第、自動で復帰します。")
     audio_output_lost = True
 
+# --- root所有のインストール済み資産とリポジトリ側の同期 ---
+# git pullはrootコピー(/usr/local/sbin 等)を更新しないため、ハッシュ差分を
+# 検出したら sudoers 許可の install(DAP_ASSETS) で自動的に再導入する。
+def sync_installed_assets():
+    import hashlib
+    assets = [
+        ("tools/dap-web-wifi.py", "/usr/local/sbin/dap-web-wifi", "0755"),
+        ("polkit/50-dap-network.rules", "/etc/polkit-1/rules.d/50-dap-network.rules", "0644"),
+    ]
+    for repo_rel, inst_path, mode in assets:
+        repo_path = os.path.join(BASE_DIR, repo_rel)
+        try:
+            with open(repo_path, "rb") as f:
+                repo_hash = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            continue
+        installed = True
+        try:
+            with open(inst_path, "rb") as f:
+                inst_hash = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            installed = False
+            inst_hash = ""
+        if installed and repo_hash == inst_hash:
+            continue
+        result = subprocess.run(
+            ["sudo", "/usr/bin/install", "-o", "root", "-g", "root", "-m", mode, repo_path, inst_path],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+        if result.returncode == 0:
+            print(f"Installed asset updated: {inst_path}")
+        else:
+            print(f"Installed asset sync failed ({inst_path}): {result.stderr.strip()}")
+            print("ヒント: sudo bash /home/pi/dap/tools/configure_dap_sudoers.sh を実行して sudoers を更新してください")
+
+sync_installed_assets()
+
 # --- 2. e-Paper 初期化 ---
 epd = epd2in13.EPD()
 
