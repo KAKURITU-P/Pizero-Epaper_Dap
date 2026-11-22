@@ -89,7 +89,7 @@ def profile_ssid(name):
     return name
 
 
-def list_profiles():
+def list_profiles(request):
     """保存済みWi-Fiプロファイルの一覧(wifiタイプのみ)を返す。APモード中も使用可。"""
     result = run([NMCLI, "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"], 10)
     if result.returncode != 0:
