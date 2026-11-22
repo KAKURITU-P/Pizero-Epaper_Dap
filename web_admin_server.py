@@ -32,8 +32,6 @@ GITHUB_IMAGE_URL_PATTERN = re.compile(
     r"https://github\.com/user-attachments/assets/"
     r"[0-9a-fA-F-]+"
 )
-WIFI_JOB = {"state": "idle", "ssid": "", "message": ""}
-WIFI_JOB_LOCK = threading.Lock()
 FAVORITES_LOCK = threading.Lock()
 SSID_MAX_BYTES = 32
 MUSIC_DIR = Path("/home/pi/music")
@@ -433,24 +431,23 @@ def scan_wifi():
     return run_wifi_helper({"action": "scan"}, timeout=35).get("networks", [])
 
 
-def connect_wifi_worker(ssid, security, password):
-    global WIFI_JOB
-    try:
-        result = run_wifi_helper({"action": "connect", "ssid": ssid, "security": security, "password": password}, timeout=60)
-        with WIFI_JOB_LOCK:
-            WIFI_JOB = {"state": "success", "ssid": ssid, "message": result.get("message", "接続先を保存しました")}
-    except (OSError, subprocess.SubprocessError, RuntimeError) as error:
-        with WIFI_JOB_LOCK:
-            WIFI_JOB = {"state": "error", "ssid": ssid, "message": str(error)}
+def list_wifi_profiles():
+    """保存済みWi-Fiプロファイル一覧。APモード中でも使用できる。"""
+    return run_wifi_helper({"action": "list"}, timeout=20)
 
 
-def start_wifi_connect(ssid, security, password):
-    global WIFI_JOB
-    with WIFI_JOB_LOCK:
-        if WIFI_JOB["state"] == "running":
-            raise RuntimeError("別のWi-Fi接続処理が進行中です")
-        WIFI_JOB = {"state": "running", "ssid": ssid, "message": "接続しています"}
-    threading.Thread(target=connect_wifi_worker, args=(ssid, security, password), daemon=True).start()
+# プロファイル操作ごとのヘルパータイムアウト(activateはNMの待ち時間に合わせる)
+WIFI_PROFILE_TIMEOUTS = {"add": 20, "password": 20, "delete": 15, "show": 15, "activate": 60}
+
+def operate_wifi_profile(payload):
+    op = payload.get("op")
+    if op not in WIFI_PROFILE_TIMEOUTS:
+        raise RuntimeError("不正なWi-Fi操作です")
+    request = {"action": op}
+    for key in ("name", "ssid", "security", "password"):
+        if key in payload:
+            request[key] = payload[key]
+    return run_wifi_helper(request, timeout=WIFI_PROFILE_TIMEOUTS[op])
 
 
 def save_ap_config(config):
@@ -816,9 +813,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             elif path == "/api/wifi/scan":
                 self.send_json({"networks": scan_wifi()})
-            elif path == "/api/wifi/job":
-                with WIFI_JOB_LOCK:
-                    self.send_json(dict(WIFI_JOB))
+            elif path == "/api/wifi/profiles":
+                self.send_json({"profiles": list_wifi_profiles()})
             elif path == "/api/update":
                 self.send_json(get_github_update())
             elif path == "/api/update/check":
@@ -840,20 +836,8 @@ class Handler(BaseHTTPRequestHandler):
                 saved["active"] = ap_is_active()
                 saved["restart_required"] = ap_restart_required(saved, saved["active"])
                 self.send_json(saved)
-            elif path == "/api/wifi/connect":
-                ssid = payload.get("ssid")
-                security = payload.get("security", "")
-                password = payload.get("password", "")
-                if not isinstance(ssid, str) or not 1 <= len(ssid.encode("utf-8")) <= SSID_MAX_BYTES:
-                    raise ValueError("SSIDはUTF-8で1〜32バイトにしてください")
-                if not isinstance(password, str):
-                    raise ValueError("パスワードが不正です")
-                if password and (not 8 <= len(password) <= 63 or any(ord(char) < 32 or ord(char) > 126 for char in password)):
-                    raise ValueError("Wi-Fiパスワードは印字可能なASCIIで8〜63文字にしてください")
-                if not isinstance(security, str):
-                    raise ValueError("Wi-Fi暗号方式が不正です")
-                start_wifi_connect(ssid, security, password)
-                self.send_json({"state": "running", "ssid": ssid}, 202)
+            elif path == "/api/wifi/profile":
+                self.send_json(operate_wifi_profile(payload))
             elif path == "/api/update":
                 start_github_update()
                 self.send_json(get_github_update(), 202)
