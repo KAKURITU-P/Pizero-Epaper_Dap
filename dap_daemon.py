@@ -616,6 +616,9 @@ def consume_playback_command():
         pass
     if command.get("action") == "toggle":
         avrcp_toggle()
+        # トグル直後に状態を再公開しないと、Web側が最大5秒古い状態を表示して
+        # 「再生中/一時停止が反転する」ように見えるため即座に更新する。
+        publish_playback_status()
 
 def sync_favorites():
     """管理画面など別プロセスによるお気に入り更新を取り込む"""
