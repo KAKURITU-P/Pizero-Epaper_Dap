@@ -89,6 +89,11 @@ if command -v systemctl >/dev/null 2>&1; then
     sudo systemctl reload dbus || sudo killall -HUP dbus-daemon || true
 fi
 
+echo "=== polkit ルール(デーモンからのNetworkManager操作)を導入 ==="
+# サービスコンテキストのnmcliはpolkitに拒否されるため、piにNM操作のみ許可する。
+sudo install -d -m 0755 /etc/polkit-1/rules.d
+sudo install -o root -g root -m 0644 "$DAP_DIR/polkit/50-dap-network.rules" /etc/polkit-1/rules.d/
+
 echo "=== Wi-Fi 省電力モードを無効化(mDNS/マルチキャスト安定化) ==="
 # 省電力モードが有効だと mDNS(dap.local) の応答が落ちることがあるため無効化する。
 sudo install -d -m 0755 /etc/NetworkManager/conf.d

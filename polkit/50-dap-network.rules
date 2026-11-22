@@ -1,0 +1,13 @@
+// dap_daemon(pi)にNetworkManagerの操作だけを許可する。
+// systemdサービスコンテキストのnmcliはpolkitの
+// org.freedesktop.NetworkManager.network-control で拒否されるため、
+// 本体メニューのWi-Fi接続が失敗していた。ルールはpolkitdが自動で再読込する。
+polkit.addRule(function(action, subject) {
+    var allowed = [
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.wifi.scan"
+    ];
+    if (allowed.indexOf(action.id) >= 0 && subject.user == "pi") {
+        return polkit.Result.YES;
+    }
+});

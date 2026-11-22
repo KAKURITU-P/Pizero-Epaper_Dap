@@ -1480,13 +1480,21 @@ def render_operation_guide_screen(image, draw):
         draw.text((8, 108), truncate_by_width(hint, font_small, width - 16), font=font_small, fill=0)
 
 def get_current_wifi_ssid():
+    """接続中のWi-Fi SSID(プロファイル名)を返す(未接続・取得失敗はNone)。
+
+    iwgetidは標準のTrixieには無いため、NetworkManagerに直接問い合わせる。
+    """
     try:
         res = subprocess.check_output(
-            ["iwgetid", "-r"], text=True, errors="ignore", timeout=3
+            ["nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show", "wlan0"],
+            text=True, errors="ignore", timeout=5,
         )
-        ssid = res.strip()
-        if ssid:
-            return ssid
+        for line in res.splitlines():
+            if not line.startswith("GENERAL.CONNECTION:"):
+                continue
+            value = line.split(":", 1)[1].strip()
+            if value and value != "--":
+                return value
     except Exception:
         pass
     return None
@@ -3227,17 +3235,14 @@ def connect_to_wifi(target):
         global status_message, wifi_connect_in_progress
         target_ssid = ""
         target_nmcli_id = None
-        target_wpa_id = None
         if isinstance(target, dict):
             target_ssid = (target.get("ssid") or "").strip()
             target_nmcli_id = (target.get("nmcli_id") or "").strip() or None
-            target_wpa_id = (target.get("wpa_id") or "").strip() or None
         else:
             target_ssid = str(target).strip()
             for entry in get_saved_wifi_connections():
                 if (entry.get("ssid") or "").strip() == target_ssid:
                     target_nmcli_id = (entry.get("nmcli_id") or "").strip() or None
-                    target_wpa_id = (entry.get("wpa_id") or "").strip() or None
                     break
 
         if not target_ssid:
@@ -3255,33 +3260,18 @@ def connect_to_wifi(target):
             if unblock.returncode != 0:
                 raise RuntimeError((unblock.stderr or "Wi-Fiを有効化できません").strip())
 
-            res = None
-            if target_nmcli_id:
+            # NetworkManagerへのアクティベーションはpolkitで許可されたpi権限で実行する
+            # (polkit/50-dap-network.rules)。NM管理下のwpa_supplicantに保存プロファイルは
+            # 存在しないため、旧実装のwpa_cli select_networkフォールバックは撤去した。
+            if not target_nmcli_id:
+                detail = "保存済みネットワークが見つかりません"
+            else:
                 res = subprocess.run(
                     ["nmcli", "connection", "up", "id", target_nmcli_id],
                     capture_output=True, text=True, check=False, timeout=25,
                 )
-            if res is None or res.returncode != 0:
-                if not target_wpa_id:
-                    res_wpa = subprocess.check_output(
-                        ["sudo", "wpa_cli", "-i", "wlan0", "list_networks"],
-                        text=True, errors="ignore", timeout=5,
-                    )
-                    for network in parse_wpa_cli_list_networks(res_wpa):
-                        if (network.get("ssid") or "").strip() == target_ssid and network.get("id", "").isdigit():
-                            target_wpa_id = network["id"]
-                            break
-                if target_wpa_id:
-                    res = subprocess.run(
-                        ["sudo", "wpa_cli", "-i", "wlan0", "select_network", target_wpa_id],
-                        capture_output=True, text=True, check=False, timeout=8,
-                    )
-                    if res.returncode != 0 or "FAIL" in (res.stdout or "").upper():
-                        raise RuntimeError((res.stderr or res.stdout or "wpa_supplicantが接続を拒否しました").strip())
-                elif res is not None:
+                if res.returncode != 0:
                     detail = (res.stderr or res.stdout or "NetworkManager接続失敗").strip()
-                else:
-                    detail = "保存済みネットワークが見つかりません"
 
             if not detail:
                 deadline = time.monotonic() + 15
