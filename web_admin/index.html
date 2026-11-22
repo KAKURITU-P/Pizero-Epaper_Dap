@@ -641,12 +641,16 @@
             showBtn.disabled = true;
             try {
               const result = await api("/api/wifi/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ op: "show", name: profile.name }) });
-              message("wifi-message", `${profile.ssid}: ${result.open ? "オープンネットワーク（パスワードなし）" : "パスワード " + result.psk}`, "success");
+              const label = result.enterprise ? "エンタープライズ(802.1X)ネットワークです"
+                : result.open ? "オープンネットワーク（パスワードなし）"
+                : `パスワード ${result.psk}`;
+              message("wifi-message", `${profile.ssid}: ${label}`, "success");
             } catch (error) { message("wifi-message", error.message, "error"); }
             finally { showBtn.disabled = false; }
           };
           const editBtn = document.createElement("button"); editBtn.className = "secondary";
           editBtn.textContent = "パスワード変更";
+          if (!profile.personal) editBtn.style.display = "none";
           editBtn.onclick = async () => {
             const password = window.prompt(`${profile.ssid} の新しいパスワード（8〜63文字）`);
             if (password === null) return;

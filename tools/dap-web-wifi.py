@@ -89,6 +89,24 @@ def profile_ssid(name):
     return name
 
 
+def read_security(name):
+    """プロファイルのkey-mgmtとpskを返す(取得失敗時は空文字)。"""
+    result = run([NMCLI, "-s", "-t", "-f",
+                  "802-11-wireless-security.key-mgmt,802-11-wireless-security.psk",
+                  "connection", "show", "id", name], 8)
+    key_mgmt, psk = "", ""
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            fields = parse_fields(line)
+            if len(fields) < 2:
+                continue
+            if fields[0].endswith("key-mgmt"):
+                key_mgmt = fields[1]
+            elif fields[0].endswith("psk"):
+                psk = fields[1]
+    return key_mgmt, psk
+
+
 def list_profiles(request):
     """保存済みWi-Fiプロファイルの一覧(wifiタイプのみ)を返す。APモード中も使用可。"""
     result = run([NMCLI, "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"], 10)
@@ -103,10 +121,14 @@ def list_profiles(request):
         if "wireless" not in conn_type or not name or name in seen:
             continue
         seen.add(name)
+        key_mgmt, _ = read_security(name)
         profiles.append({
             "name": name,
             "ssid": profile_ssid(name),
             "active": bool(device.strip()),
+            # パーソナル(WPA-PSK/WPA3-SAE)だけがパスワード変更の対象。エンタープライズ
+            # (802.1X)やオープンはUIでパスワード変更ボタンを隠すためのフラグ。
+            "personal": key_mgmt in {"wpa-psk", "sae"},
         })
     profiles.sort(key=lambda item: (not item["active"], item["ssid"].casefold()))
     # 他のアクションと同様にokラッパー付きで返す(サーバ側の応答解析はdict前提)
@@ -199,8 +221,17 @@ def save_profile(request):
 
 
 def change_password(request):
-    """保存済みプロファイルのパスワードを変更する(APモード中も可)。"""
+    """保存済みプロファイルのパスワードを変更する(APモード中も可)。
+
+    WPA-PSK/WPA3-SAEのプロファイルのみ対象。エンタープライズ(802.1X)に
+    対して実行するとwifi-sec.key-mgmt=wpa-pskの上書きで壊れるため拒否する。
+    """
     name = require_wifi_profile(request.get("name"))
+    key_mgmt, _ = read_security(name)
+    if key_mgmt in {"", "none"}:
+        raise ValueError("オープンネットワークのためパスワード変更はありません")
+    if key_mgmt not in {"wpa-psk", "sae"}:
+        raise ValueError("エンタープライズ(802.1X)ネットワークのためWebからは変更できません")
     password = validate_password_text(request.get("password"))
     result = run([NMCLI, "connection", "modify", "id", name,
                   "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password], 10)
@@ -222,21 +253,13 @@ def delete_profile(request):
 def show_profile(request):
     """保存済みプロファイルのパスワードを返す(APモード中も可)。"""
     name = require_wifi_profile(request.get("name"))
-    result = run([NMCLI, "-s", "-t", "-f",
-                  "802-11-wireless-security.key-mgmt,802-11-wireless-security.psk",
-                  "connection", "show", "id", name], 8)
-    if result.returncode != 0:
-        raise RuntimeError(error_from(result, "パスワードを取得できませんでした"))
-    key_mgmt, psk = "", ""
-    for line in result.stdout.splitlines():
-        fields = parse_fields(line)
-        if len(fields) < 2:
-            continue
-        if fields[0].endswith("key-mgmt"):
-            key_mgmt = fields[1]
-        elif fields[0].endswith("psk"):
-            psk = fields[1]
-    if key_mgmt == "none" or not psk:
+    key_mgmt, psk = read_security(name)
+    if key_mgmt == "none":
+        return {"ok": True, "psk": "", "open": True}
+    if key_mgmt == "wpa-eap":
+        # 802.1Xの資格情報は802-1xセクションにあり、pskとは別物
+        return {"ok": True, "psk": "", "enterprise": True}
+    if not psk:
         return {"ok": True, "psk": "", "open": True}
     return {"ok": True, "psk": psk, "open": False}
 
