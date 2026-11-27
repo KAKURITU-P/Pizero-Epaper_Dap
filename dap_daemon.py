@@ -4237,6 +4237,8 @@ def on_btn_menu_or_select():
 
         if current_screen == "CAT_EQ":
             if eq_cursor == 3:
+                global eq_preset_index
+                eq_preset_index = 0   # FLAT
                 eq_values["BASS"] = 0
                 eq_values["MID"] = 0
                 eq_values["TREBLE"] = 0
@@ -4522,6 +4524,16 @@ def on_btn_play_or_back():
             current_screen = "PLAY"
             request_display_update(is_full_refresh=True)
 
+def cycle_eq_preset(direction):
+    """EQ画面のスロット3でプリセットをサイクル適用する(direction: +1/-1)。"""
+    global eq_preset_index, eq_values
+    eq_preset_index = (eq_preset_index + direction) % len(EQ_PRESETS)
+    name, bass, mid, treble = EQ_PRESETS[eq_preset_index]
+    eq_values["BASS"], eq_values["MID"], eq_values["TREBLE"] = bass, mid, treble
+    apply_eq_settings()
+    save_settings()
+    print(f"EQ preset: {name} ({bass:+d}/{mid:+d}/{treble:+d})")
+
 def on_btn_up_action():
     if not debounce("btn_up_act"): return
     if exit_cat_clock_if_needed(): return
@@ -4533,6 +4545,9 @@ def on_btn_up_action():
                 band = eq_bands[eq_cursor]
                 eq_values[band] = min(6, eq_values[band] + 1)
                 schedule_settings_save()
+                request_display_update(is_full_refresh=False)
+            elif eq_cursor == 3:
+                cycle_eq_preset(1)
                 request_display_update(is_full_refresh=False)
         elif current_screen == "MENU_GUIDE":
             advance_guide_page()
@@ -4558,6 +4573,9 @@ def on_btn_down_action():
                 band = eq_bands[eq_cursor]
                 eq_values[band] = max(-6, eq_values[band] - 1)
                 schedule_settings_save()
+                request_display_update(is_full_refresh=False)
+            elif eq_cursor == 3:
+                cycle_eq_preset(-1)
                 request_display_update(is_full_refresh=False)
         elif current_screen == "MENU_GUIDE":
             advance_guide_page()
