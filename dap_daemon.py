@@ -451,6 +451,7 @@ playback_history = []
 # counts=曲ごとの再生回数。play_data.jsonの"stats"として、曲切り替え時と終了時に書き出す。
 play_stats = {"total_sec": 0, "track_count": 0, "counts": {}}
 is_shuffle = False
+autoplay_on_boot = False   # 起動時に前回の曲を自動再生する(settings.jsonで保存)
 
 # リピートモード: 0: OFF, 1: REPEAT_ONE, 2: REPEAT_ALL
 repeat_mode = 0
@@ -459,6 +460,8 @@ repeat_mode = 0
 sleep_timer_minutes = 0
 sleep_timer_end_time = 0.0
 sleep_timer_pending = False  
+# あとN曲で終了モード: 完奏のたびにカウントダウンし、0でシャットダウン
+sleep_tracks_remaining = 0
 battery_shutdown_pending = False
 
 # イースターエッグ & EQ 関連変数
@@ -471,7 +474,7 @@ eq_values = {"BASS": 0, "MID": 0, "TREBLE": 0}
 eq_cursor = 0
 
 def load_settings():
-    global is_clock_unlocked, is_eq_unlocked, eq_values, is_shuffle, repeat_mode
+    global is_clock_unlocked, is_eq_unlocked, eq_values, is_shuffle, repeat_mode, autoplay_on_boot
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -491,12 +494,14 @@ def load_settings():
         saved_repeat = data.get("repeat_mode", repeat_mode)
         if isinstance(saved_repeat, int) and not isinstance(saved_repeat, bool) and 0 <= saved_repeat <= 2:
             repeat_mode = saved_repeat
+        autoplay_on_boot = bool(data.get("autoplay_on_boot", False))
     except FileNotFoundError:
         pass
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
         print(f"Settings load error: {e}")
 
 def save_settings():
+    global autoplay_on_boot
     temp_file = SETTINGS_FILE + ".tmp"
     try:
         data = {
@@ -505,6 +510,7 @@ def save_settings():
             "eq_values": {band: eq_values[band] for band in eq_bands},
             "is_shuffle": is_shuffle,
             "repeat_mode": repeat_mode,
+            "autoplay_on_boot": autoplay_on_boot,
         }
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -2353,7 +2359,9 @@ def display_worker():
             elif scr == "PLAY":
                 # スリープタイマー表示生成(60分超は時間形式)
                 timer_str = ""
-                if sleep_timer_end_time > 0:
+                if sleep_tracks_remaining > 0:
+                    timer_str = f"T:{sleep_tracks_remaining}曲"
+                elif sleep_timer_end_time > 0:
                     rem_sec = max(0, int(sleep_timer_end_time - time.time()))
                     if rem_sec >= 3600:
                         timer_str = f" T:{rem_sec // 3600}H{(rem_sec % 3600) // 60:02d}"
@@ -3643,6 +3651,7 @@ def update_menu_items(reset_cursor=True):
         add(f"シャッフル: {'ON' if is_shuffle else 'OFF'}", "toggle_shuffle")
         add(f"リピート: {rep_labels[repeat_mode]}", "toggle_repeat")
         add("スリープタイマー", "open_sleep")
+        add(f"起動時自動再生: {'ON' if autoplay_on_boot else 'OFF'}", "toggle_autoplay")
         add("出力先設定", "open_output")
         if is_eq_unlocked:
             add("EQ設定", "open_eq")
@@ -3653,6 +3662,8 @@ def update_menu_items(reset_cursor=True):
         add(f"30分 {'<--' if sleep_timer_minutes == 30 else ''}", "set_sleep", 30)
         add(f"1時間 {'<--' if sleep_timer_minutes == 60 else ''}", "set_sleep", 60)
         add(f"2時間 {'<--' if sleep_timer_minutes == 120 else ''}", "set_sleep", 120)
+        add(f"あと5曲 {'<--' if sleep_tracks_remaining == 5 else ''}", "set_sleep_tracks", 5)
+        add(f"あと10曲 {'<--' if sleep_tracks_remaining == 10 else ''}", "set_sleep_tracks", 10)
 
     elif current_screen == "MENU_FAVS":
         # 削除済みファイルは履歴と同様に表示から除外する(登録自体は残す)。
@@ -4171,13 +4182,22 @@ def toggle_repeat():
     save_settings()
 
 def set_sleep_timer(mins):
-    global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
+    global sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending, sleep_tracks_remaining
     sleep_timer_minutes = mins
     sleep_timer_pending = False  # ← 追加（タイマー更新時にフラグをクリア）
+    sleep_tracks_remaining = 0   # 時間制と曲数制は排他
     if mins > 0:
         sleep_timer_end_time = time.time() + (mins * 60)
     else:
         sleep_timer_end_time = 0.0
+
+def set_sleep_tracks(count):
+    """あとN曲モード: 完奏のたびにカウントダウンし、0でシャットダウンする。"""
+    global sleep_tracks_remaining, sleep_timer_minutes, sleep_timer_end_time, sleep_timer_pending
+    sleep_tracks_remaining = max(1, int(count))
+    sleep_timer_minutes = 0
+    sleep_timer_end_time = 0.0
+    sleep_timer_pending = False
 
 def exit_cat_clock_if_needed():
     global current_screen
@@ -4210,7 +4230,7 @@ def check_easter_egg_trigger():
 def on_btn_menu_or_select():
     if not debounce("btn_menu_select"): return
     global current_screen, selected_album, status_message, eq_cursor
-    global is_clock_unlocked, is_eq_unlocked, guide_page
+    global is_clock_unlocked, is_eq_unlocked, guide_page, autoplay_on_boot
     global bt_paired_devices, bt_paired_devices_loading
     with state_lock:
         reset_inactivity_timer()
@@ -4346,8 +4366,17 @@ def on_btn_menu_or_select():
             toggle_repeat()
             update_menu_items(reset_cursor=False)
             request_display_update(is_full_refresh=False)
+        elif entry_id == "toggle_autoplay":
+            autoplay_on_boot = not autoplay_on_boot
+            save_settings()
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
         elif entry_id == "set_sleep":
             set_sleep_timer(entry_data)
+            update_menu_items(reset_cursor=False)
+            request_display_update(is_full_refresh=False)
+        elif entry_id == "set_sleep_tracks":
+            set_sleep_tracks(entry_data)
             update_menu_items(reset_cursor=False)
             request_display_update(is_full_refresh=False)
 
@@ -4635,7 +4664,13 @@ btn_play_back.when_pressed   = safe_button(on_btn_play_or_back)
 
 # --- 11. メインループ ---
 def handle_track_completion():
-    global is_playing, current_track_idx
+    global is_playing, current_track_idx, sleep_tracks_remaining
+
+    if sleep_tracks_remaining > 0:
+        sleep_tracks_remaining -= 1
+        if sleep_tracks_remaining == 0:
+            # あとN曲モードの完奏 → 既存の完奏時シャットダウン経路へ
+            sleep_timer_pending = True
 
     if sleep_timer_pending or battery_shutdown_pending:
         message = "Battery Empty..." if battery_shutdown_pending else "Sleep Timer Off..."
@@ -4764,6 +4799,10 @@ try:
                 # ガイドは読みながら操作する画面なので10秒自動復帰の対象外
                 current_screen = "PLAY"
                 request_display_update(is_full_refresh=True)
+
+    # 起動時自動再生(設定ON時): 前回の曲を頭から再生する
+    if autoplay_on_boot and playlist:
+        play_current_track(full_refresh=False)
 
 except KeyboardInterrupt:
     clean_shutdown_display("Power Off...")
